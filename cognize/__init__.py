@@ -1,3 +1,3 @@
-from .simulation import run_simulation, generate_signal, plot_trace
+from .epistemic import EpistemicState
 
-__all__ = ["run_simulation", "generate_signal", "plot_trace"]
+__all__ = ["EpistemicState"]
