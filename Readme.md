@@ -24,15 +24,10 @@ It enables programmable epistemic control by modeling belief (`V`), reality (`R`
 - Drift-aware cognition engine (`EpistemicState`)
 - Programmable rupture thresholds and realignment logic
 - Symbolic rupture and collapse modeling
-- Control layer for hallucination detection in LLMs or symbolic gating in agents
-- Minimal, extensible, domain-agnostic
-
----
-
-### Subtle Capabilities
-
 - Supports high-dimensional reality inputs (e.g., embeddings)
 - Export cognition logs (`.json`, `.csv`) for external audits
+- Control layer for hallucination detection in LLMs or symbolic gating in agents
+- Minimal, extensible, domain-agnostic
 
 ---
 
