@@ -59,11 +59,20 @@ pip install cognize
 ```python
 from cognize import EpistemicState
 
+# Scalar-based epistemic drift tracking
 e = EpistemicState(V0=0.0, threshold=0.4)
 
 for R in [0.1, 0.3, 0.6, 0.8]:
     e.receive(R)
-    print(e.symbol(), e.state())
+    print(e.symbol(), e.summary())
+
+# Access rolling drift statistics
+print(e.drift_stats(window=3))
+
+# Export to JSON or CSV
+e.export_json("cognition.json")
+e.export_csv("cognition.csv")
+
 ```
 
 **Expected Output:**
@@ -71,7 +80,11 @@ for R in [0.1, 0.3, 0.6, 0.8]:
 ⊙ {'V': 0.03, 'E': 0.01, 'Θ': 0.4, ...}
 ⊙ {...}
 ⚠ {'V': 0.0, 'E': 0.0, 'Θ': 0.4, ...}
+{'mean_drift': 0.24, 'std_drift': 0.13, 'max_drift': 0.3, 'min_drift': 0.1}
+
 ```
+
+Cognize also supports vector input (e.g. NumPy arrays) for multi-dimensional drift modeling — useful for embeddings or continuous signals.
 
 ---
 
