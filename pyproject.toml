@@ -1,0 +1,13 @@
+[project]
+name = "cognize"
+version = "0.1.0"
+description = "Symbolic cognition engine for epistemic drift, rupture detection, and realignment."
+authors = [{name="Pulikanti Sashi Bharadwaj"}]
+license = {text = "Apache-2.0"}
+readme = "README.md"
+requires-python = ">=3.7"
+dependencies = ["numpy"]
+
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
