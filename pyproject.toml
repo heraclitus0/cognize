@@ -6,7 +6,7 @@ authors = [{name="Pulikanti Sashi Bharadwaj"}]
 license = {text = "Apache-2.0"}
 readme = "README.md"
 requires-python = ">=3.7"
-dependencies = ["numpy"]
+dependencies = ["numpy", "pandas", "matplotlib", "seaborn"]
 
 [build-system]
 requires = ["setuptools", "wheel"]
