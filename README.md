@@ -122,6 +122,4 @@ Cognize is released under the [Apache 2.0 License](LICENSE).
 
 ---
 
-<p align="center"> <em>Built by Pulikanti Sashi Bharadwaj · Powered by epistemic recursion</em> </p> ```
-
----
+<p align="center"> <em>Built by Pulikanti Sashi Bharadwaj · Powered by epistemic recursion</em> </p> 
