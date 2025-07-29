@@ -50,4 +50,5 @@ pip install cognize
 
 ## 📖 License
 
-Cognize is released under the [Apache 2.0 License](LICENSE.txt).
+Cognize is released under the [Apache 2.0 License](LICENSE).
+
