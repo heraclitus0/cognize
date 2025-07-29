@@ -1,56 +1,44 @@
 # Cognize
 
-**Cognize** is a symbolic cognition layer for Python systems.  
-It enables any agent, model, or tool to monitor and adapt its internal belief state (`V`)  
-in relation to reality (`R`) — with symbolic rupture detection (`⚠`) and memory-based adaptation.
+**Cognize** is a symbolic cognition layer that gives any Python system — from LLMs to agents to simulations — a programmable epistemic lens.
+
+It tracks projected belief, received signals, memory drift, rupture thresholds, and symbolic rupture, enabling cognition-aware control flows.
 
 ---
 
-## 🧠 Key Concepts
+## What It Enables
 
-| Symbol | Meaning |
-|--------|---------|
-| `V`    | Internal projection / belief |
-| `R`    | Received signal / reality |
-| `∆`    | Distortion = `|R - V|` |
-| `Θ`    | Threshold for rupture |
-| `E`    | Misalignment memory |
-| `⊙`    | Stable |
-| `⚠`    | Ruptured |
-| `∅`    | No signal yet |
+- Detect and respond to hallucinations in LLMs  
+- Add epistemic memory and rupture tracking to agents  
+- Log symbolic pressure in belief vs reality systems  
+- Filter outputs using symbolic rupture triggers  
+- Enable cognition-awareness in RAG pipelines
 
 ---
 
-## 🔧 Example
+## Core Concepts
+
+| Symbol | Meaning                |
+|--------|------------------------|
+| `V`    | Projection (belief)    |
+| `R`    | Reality (signal)       |
+| `∆`    | Distortion             |
+| `Θ`    | Tolerance threshold    |
+| `E`    | Misalignment memory    |
+| `⊙`    | Stable                 |
+| `⚠`    | Rupture                |
+| `∅`    | No signal yet          |
+
+---
+
+## Usage
 
 ```python
 from cognize import EpistemicState
 
-e = EpistemicState()
+e = EpistemicState(V0=0.0, threshold=0.4)
 
-for r in [0.1, 0.3, 0.8, 1.2, 0.2]:
-    e.receive(r)
+# Pass signals over time
+for R in [0.1, 0.3, 0.6, 0.8]:
+    e.receive(R)
     print(e.symbol(), e.state())
-```
-
----
-
-## 🔍 Applications
-
-- Track hallucination risk in LLM agents
-- Epistemic wrappers for neural nets, sensors, or control systems
-- Rupture-based memory resets in autonomous agents
-- Symbolic overlays in simulations or forecasting models
-
----
-
-## 📜 License
-
-Licensed under the Apache 2.0 License (see `LICENSE`)
-
----
-
-## 📖 License
-
-Cognize is released under the [Apache 2.0 License](LICENSE).
-
