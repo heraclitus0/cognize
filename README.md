@@ -28,6 +28,8 @@ It enables programmable epistemic control by modeling belief (`V`), reality (`R`
 - Export cognition logs (`.json`, `.csv`) for external audits
 - Control layer for hallucination detection in LLMs or symbolic gating in agents
 - Minimal, extensible, domain-agnostic
+- Built with symbolic state logic — extensible for memory, attention, or projection systems
+
 
 ---
 
