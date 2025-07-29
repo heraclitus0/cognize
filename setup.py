@@ -1,30 +1,32 @@
 from setuptools import setup, find_packages
 
-with open("Readme.md", "r", encoding="utf-8") as fh:
-    long_description = fh.read()
-
 setup(
     name="cognize",
     version="0.1.0",
-    author="Your Name",
-    author_email="you@example.com",
-    description="A symbolic simulation tool for modeling projection drift, rupture, and adaptive recovery.",
-    long_description=long_description,
+    author="Pulikanti Sashi Bharadwaj",
+    description="Symbolic cognition engine for projection modeling and rupture control.",
+    long_description=open("README.md", encoding="utf-8").read(),
     long_description_content_type="text/markdown",
-    url="https://github.com/yourusername/cognize",
-    packages=find_packages(),
+    url="https://github.com/heraclitus0/cognize",
+    project_urls={
+        "Source": "https://github.com/heraclitus0/cognize",
+        "Bug Tracker": "https://github.com/heraclitus0/cognize/issues",
+    },
+    license="Apache-2.0",
     classifiers=[
-        "Programming Language :: Python :: 3",
         "License :: OSI Approved :: Apache Software License",
+        "Programming Language :: Python :: 3",
         "Operating System :: OS Independent",
+        "Development Status :: 3 - Alpha",
         "Intended Audience :: Developers",
-        "Intended Audience :: Science/Research",
-        "Topic :: Scientific/Engineering :: Artificial Intelligence",
-        "Topic :: Scientific/Engineering :: Human Machine Interfaces"
+        "Topic :: Scientific/Engineering :: Artificial Intelligence"
     ],
-    python_requires='>=3.8',
+    packages=find_packages(),
+    include_package_data=True,
     install_requires=[
         "numpy",
-        "matplotlib"
+        "matplotlib",
+        "pandas"
     ],
+    python_requires=">=3.8",
 )
