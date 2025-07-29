@@ -2,8 +2,6 @@
   <img src="cognize-logo.png" alt="Cognize Logo" width="200"/>
 </p>
 
----
-
 # Cognize
 ---
 
