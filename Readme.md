@@ -4,6 +4,7 @@
 
 # Cognize
 Give any Python system cognition
+
 ![License](https://img.shields.io/badge/license-Apache%202.0-blue)
 ![Python](https://img.shields.io/badge/python-3.8+-blue)
 ![Release](https://img.shields.io/badge/version-v0.1.0-informational)
