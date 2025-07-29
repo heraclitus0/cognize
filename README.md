@@ -84,7 +84,7 @@ e.export_csv("cognition.csv")
 
 ```
 
-'Cognize also supports vector input (e.g. NumPy arrays) for multi-dimensional drift modeling — useful for embeddings or continuous signals.'
+"Cognize also supports vector input (e.g. NumPy arrays) for multi-dimensional drift modeling — useful for embeddings or continuous signals."
 
 ---
 
