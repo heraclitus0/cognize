@@ -29,6 +29,13 @@ It enables programmable epistemic control by modeling belief (`V`), reality (`R`
 
 ---
 
+### Subtle Capabilities
+
+- Supports high-dimensional reality inputs (e.g., embeddings)
+- Export cognition logs (`.json`, `.csv`) for external audits
+
+---
+
 ## Installation
 
 ```bash
