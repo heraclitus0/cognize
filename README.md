@@ -69,18 +69,46 @@ for R in [0.1, 0.3, 0.6, 0.8]:
 # Access rolling drift statistics
 print(e.drift_stats(window=3))
 
-# Export to JSON or CSV
+# Trigger fallback if cognitive rupture risk is too high
+e.intervene_if_ruptured(lambda: print("⚠ Intervention triggered!"))
+
+# Manually realign belief to current signal
+e.realign(R=0.7)
+
+# Export logs
 e.export_json("cognition.json")
 e.export_csv("cognition.csv")
+
 
 ```
 
 **Expected Output:**
+
 ```
 ⊙ {'V': 0.03, 'E': 0.01, 'Θ': 0.4, ...}
 ⊙ {...}
 ⚠ {'V': 0.0, 'E': 0.0, 'Θ': 0.4, ...}
 {'mean_drift': 0.24, 'std_drift': 0.13, 'max_drift': 0.3, 'min_drift': 0.1}
+⚠ Intervention triggered!
+
+```
+
+**Sample cognition.json output:**
+
+```
+[
+  {
+    "t": 0,
+    "V": 0.03,
+    "R": 0.1,
+    "delta": 0.1,
+    "Θ": 0.4,
+    "ruptured": false,
+    "symbol": "⊙",
+    "source": "default"
+  },
+  ...
+]
 
 ```
 
@@ -91,3 +119,9 @@ Cognize also supports vector input (e.g. NumPy arrays) for multi-dimensional dri
 ## License
 
 Cognize is released under the [Apache 2.0 License](LICENSE).
+
+---
+
+<p align="center"> <em>Built by Pulikanti Sashi Bharadwaj · Powered by epistemic recursion</em> </p> ```
+
+---
