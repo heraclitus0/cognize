@@ -1,4 +1,12 @@
 # Cognize
+---
+
+![License](https://img.shields.io/badge/license-Apache%202.0-blue)
+![Python](https://img.shields.io/badge/python-3.8+-blue)
+![Release](https://img.shields.io/badge/version-v0.1.0-informational)
+![Status](https://img.shields.io/badge/status-beta-orange)
+
+---
 
 **Cognize** is a symbolic cognition layer that gives any Python system — from LLMs to agents to simulations — a programmable epistemic lens.
 
