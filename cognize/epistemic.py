@@ -83,14 +83,6 @@ class EpistemicState:
 
         self._time += 1
 
-    def _resolve_reality(self, R):
-        if isinstance(R, (int, float)):
-            return R
-        elif isinstance(R, list):
-            return sum(R) / len(R)
-        else:
-            raise ValueError("Reality must be float or list of floats")
-
     def rupture_risk(self):
         if not self.history:
             return None
@@ -168,3 +160,60 @@ class EpistemicState:
 
     def rupture_log(self):
         return self.meta_ruptures
+    def drift_stats(self, window=10):
+        """Returns rolling statistics of delta values over last `window` steps."""
+        deltas = [step['delta'] for step in self.history[-window:] if 'delta' in step]
+        if not deltas:
+            return {}
+        arr = np.array(deltas)
+        return {
+            "mean_drift": float(arr.mean()),
+            "std_drift": float(arr.std()),
+            "max_drift": float(arr.max()),
+            "min_drift": float(arr.min())
+        }
+
+    def export_json(self, path):
+        """Exports history to JSON file."""
+        import json
+        with open(path, 'w') as f:
+            json.dump(self.history, f, indent=2)
+
+    def export_csv(self, path):
+        """Exports history to CSV file."""
+        import csv
+        if not self.history:
+            return
+        keys = self.history[0].keys()
+        with open(path, 'w', newline='') as f:
+            writer = csv.DictWriter(f, fieldnames=keys)
+            writer.writeheader()
+            for row in self.history:
+                writer.writerow(row)
+
+    def _log_event(self, event_type, details=None):
+        """Internal: Logs symbolic events (e.g. rupture, manual realign)."""
+        if not hasattr(self, 'event_log'):
+            self.event_log = []
+        self.event_log.append({
+            "event": event_type,
+            "time": self._time,
+            "timestamp": datetime.utcnow().isoformat(),
+            "details": details or {}
+        })
+
+    def event_log_summary(self):
+        """Returns symbolic event history (ruptures, triggers, interventions)."""
+        return getattr(self, 'event_log', [])
+
+    def _resolve_reality(self, R):
+        """Supports scalar, list, or vector (ndarray) input."""
+        if isinstance(R, (int, float)):
+            return R
+        elif isinstance(R, list):
+            R = np.array(R)
+        if isinstance(R, np.ndarray):
+            if isinstance(self.V, (int, float)):
+                self.V = np.zeros_like(R)
+            return np.linalg.norm(R)
+        raise ValueError("Reality must be float, list, or ndarray")
