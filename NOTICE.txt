@@ -1,3 +1,7 @@
-**Notice**
-This package draws inspiration from a recursive projection control framework (Pulikanti, 2025), 
-focused on dynamic epistemic regulation under cognitive drift and rupture.
+NOTICE: Symbolic and Theoretical Origins
+
+Cognize is a symbolic cognition wrapper designed for epistemic drift awareness and rupture detection.
+
+This package is inspired in part by an unpublished epistemic control framework developed in 2025 by Pulikanti Sashi Bharadwaj.
+
+The system's architecture draws on ideas of recursive projection, misalignment memory, and symbolic rupture — originally formulated in a research exploration of epistemic control and dynamic belief regulation.
