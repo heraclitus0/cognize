@@ -1,50 +1,52 @@
-# cognize
+# Cognize
 
-**Cognize** is a symbolic simulation engine for modeling misalignment between internal projections and external signals.  
-It lets you simulate cognitive drift, rupture events, and adaptive realignment across time.
-
----
-
-## ✨ Features
-
-- Track projection vs. reality misalignment
-- Visualize symbolic rupture, collapse, and realignment
-- Inject signal noise, shocks, oscillations, or constants
-- Simple API for researchers, developers, and systems thinkers
+**Cognize** is a symbolic cognition layer for Python systems.  
+It enables any agent, model, or tool to monitor and adapt its internal belief state (`V`)  
+in relation to reality (`R`) — with symbolic rupture detection (`⚠`) and memory-based adaptation.
 
 ---
 
-## 🔍 Example Usage
+## 🧠 Key Concepts
+
+| Symbol | Meaning |
+|--------|---------|
+| `V`    | Internal projection / belief |
+| `R`    | Received signal / reality |
+| `∆`    | Distortion = `|R - V|` |
+| `Θ`    | Threshold for rupture |
+| `E`    | Misalignment memory |
+| `⊙`    | Stable |
+| `⚠`    | Ruptured |
+| `∅`    | No signal yet |
+
+---
+
+## 🔧 Example
 
 ```python
-from cognize import run_simulation, plot_trace
+from cognize import EpistemicState
 
-trace = run_simulation(
-    realign_strength=0.3,
-    threshold_base=0.35,
-    signal_type="shock",
-    steps=100
-)
-plot_trace(trace)
+e = EpistemicState()
+
+for r in [0.1, 0.3, 0.8, 1.2, 0.2]:
+    e.receive(r)
+    print(e.symbol(), e.state())
 ```
 
 ---
 
-## 🌍 Applications
+## 🔍 Applications
 
-- AI alignment and hallucination filtering
-- Cognitive agent modeling
-- Drift detection in simulations
-- Behavioral fatigue/collapse simulation
-- OSINT and narrative pressure modeling
+- Track hallucination risk in LLM agents
+- Epistemic wrappers for neural nets, sensors, or control systems
+- Rupture-based memory resets in autonomous agents
+- Symbolic overlays in simulations or forecasting models
 
 ---
 
-## 📦 Installation
+## 📜 License
 
-```
-pip install cognize
-```
+Licensed under the Apache 2.0 License (see `LICENSE`)
 
 ---
 
