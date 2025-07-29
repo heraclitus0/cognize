@@ -35,8 +35,6 @@ It enables programmable epistemic control by modeling belief (`V`), reality (`R`
 pip install cognize
 ```
 
-> *(or clone + run `pip install .` from repo root)*
-
 ---
 
 ## Core Concepts
