@@ -1,3 +1,6 @@
+# Copyright 2025 Pulikanti Sashi Bharadwaj
+# Licensed under the Apache License, Version 2.0
+
 import numpy as np
 import uuid
 from datetime import datetime
