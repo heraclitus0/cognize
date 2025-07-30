@@ -6,6 +6,10 @@ EpistemicState — Symbolic cognition engine for programmable epistemic drift tr
 Part of the Cognize project (https://pypi.org/project/cognize/).
 """
 
+__author__ = "Pulikanti Sashi Bharadwaj"
+__license__ = "Apache 2.0"
+__version__ = "0.1.0"
+
 
 import numpy as np
 import uuid
