@@ -120,8 +120,12 @@ Cognize also supports vector input (e.g. NumPy arrays) for multi-dimensional dri
 
 ---
 
-## Attribution
+## License
 
-Cognize is developed and maintained by Pulikanti Sashi Bharadwaj.  
-Released under the [Apache 2.0 License](LICENSE).
+Cognize is released under the [Apache 2.0 License](LICENSE).
+
+---
+
+© 2025 Pulikanti Sashi Bharadwaj  
+Original work licensed under Apache 2.0
 
