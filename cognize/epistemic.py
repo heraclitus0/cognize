@@ -1,5 +1,11 @@
-# Copyright 2025 Pulikanti Sashi Bharadwaj
 # Licensed under the Apache License, Version 2.0
+# See LICENSE file for details.
+
+"""
+EpistemicState — Symbolic cognition engine for programmable epistemic drift tracking.
+Part of the Cognize project (https://pypi.org/project/cognize/).
+"""
+
 
 import numpy as np
 import uuid
