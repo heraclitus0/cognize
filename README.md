@@ -1,6 +1,6 @@
 
 <p align="center">
-  <img src="logo.png" alt="Cognize Logo" width="200"/>
+  <img src="https://raw.githubusercontent.com/heraclitus0/cognize/main/logo.png" width="200"/>
 </p>
 
 # Cognize
