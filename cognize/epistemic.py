@@ -221,3 +221,12 @@ class EpistemicState:
 
     def _resolve_reality(self, R):
         """Supports scalar, list, or vector (ndarray) input."""
+        if isinstance(R, (int, float)):
+            return R
+        elif isinstance(R, list):
+            R = np.array(R)
+        if isinstance(R, np.ndarray):
+            if isinstance(self.V, (int, float)):
+                self.V = np.zeros_like(R)
+            return np.linalg.norm(R)
+        raise ValueError("Reality must be float, list, or ndarray")
