@@ -160,7 +160,7 @@ Stored and shown in `summary()`.
 
 ---
 
-## 🛠 Practical Patterns
+## Practical Patterns
 
 | Pattern | Use Case |
 |--------|----------|
