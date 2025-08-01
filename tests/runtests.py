@@ -1,5 +1,3 @@
-# runtests.py — executes all Cognize test suites
-
 import unittest
 
 def main():
