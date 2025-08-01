@@ -1,5 +1,3 @@
 include README.md
 include LICENSE
 recursive-include cognize *.py
-recursive-include tests *.py
-recursive-include examples *.py
