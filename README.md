@@ -105,7 +105,7 @@ agent.export_csv("trace.csv")
 ```
 ---
 
-[Read the full Cognize User Guide](https://github.com/heraclitus0/cognize/blob/main/USER_GUIDE.md)
+[Read the full Cognize User Guide](https://github.com/heraclitus0/cognize/blob/main/docs/USER_GUIDE.md)
 
 ---
 
