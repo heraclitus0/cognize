@@ -81,6 +81,7 @@ for R in [0.1, 0.3, 0.6, 0.8]:
 {'id': 'ccd84e81', 't': 4, 'V': 0.0, 'E': 0.0, 'Θ': 0.35, 'ruptures': 2, 'last_symbol': '⚠', 'identity': {}}
 ```
 
+
 ---
 
 [Full Cognize User Guide](https://github.com/heraclitus0/cognize/blob/main/docs/USER_GUIDE.md)
