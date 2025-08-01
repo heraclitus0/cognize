@@ -1,7 +1,7 @@
-NOTICE: Symbolic and Theoretical Origins
+## NOTICE: Symbolic and Theoretical Origins
 
-Cognize is a symbolic cognition wrapper designed for epistemic drift awareness and rupture detection.
+Cognize is a symbolic cognition engine designed for programmable epistemic drift tracking and rupture detection.
 
-This package is inspired in part by an epistemic control framework developed in 2025 by Pulikanti Sashi Bharadwaj.
+Its architecture is inspired in part by a 2025 epistemic control framework developed by Pulikanti Sashi Bharadwaj.
 
-The system's architecture draws on ideas of recursive projection, misalignment memory, and symbolic rupture — originally formulated in a research exploration of epistemic control and dynamic belief regulation.
+Core concepts — including recursive projection fields, misalignment memory, and symbolic rupture logic — were originally introduced in a research context exploring dynamic belief regulation and cognitive stability under volatility.
