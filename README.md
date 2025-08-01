@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/heraclitus0/cognize/main/logo.png" width="180"/>
+  <img src="https://raw.githubusercontent.com/heraclitus0/cognize/main/assets/logo.png" width="180"/>
 </p>
 
 <h1 align="center">Cognize</h1>
