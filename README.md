@@ -17,20 +17,23 @@
 
 ## Overview
 
-**Cognize** is a lightweight cognition engine that tracks epistemic drift and enables rupture-aware reasoning in recursive systems.  
-It models projection (`V`), reality (`R`), distortion (`∆`), misalignment memory (`E`), and rupture thresholds (`Θ`) — and supports programmable logic for collapse, realignment, and intervention.
+**Cognize** is a lightweight cognition engine for Python systems.  
+It tracks belief (`V`) vs. reality (`R`), manages misalignment memory (`E`), and detects symbolic rupture (`Θ`).  
+Now supports runtime injection of programmable logic for collapse, realignment, and adaptive thresholds.
+
+Built for agents, simulations, filters, and symbolic drift-aware systems.
 
 ---
 
 ## Features
 
-- Drift-aware cognitive kernel (`EpistemicState`)
-- Programmable rupture, realignment, and collapse policies
-- Misalignment memory tracking with decay
-- Symbolic cognition trace export (`.json`, `.csv`)
-- Compatible with scalar or vector inputs
-- DSL-ready via runtime injection (`inject_policy`)
-- Lightweight, dependency-minimal, and test-backed
+- Cognitive projection engine (`EpistemicState`)
+- Drift tracking with misalignment memory
+- Programmable `inject_policy(...)` support
+- Prebuilt logic in `cognize.policies` (collapse, realign, threshold)
+- Vector-compatible input support
+- Trace export (`.json`, `.csv`) for audit or training
+- Lightweight, domain-agnostic, DSL-ready
 
 ---
 
@@ -62,27 +65,38 @@ from cognize import EpistemicState
 # Initialize agent
 agent = EpistemicState(V0=0.0, threshold=0.35)
 
-# Feed scalar signals
+# Feed signals
 for R in [0.1, 0.3, 0.6, 0.8]:
     agent.receive(R)
     print(agent.summary())
+```
 
-# Inject custom rupture logic (optional)
-from cognize.policies import collapse_soft_decay, realign_tanh, threshold_adaptive
+---
 
-agent.inject_policy(
-    collapse=collapse_soft_decay,
-    realign=realign_tanh,
-    threshold=threshold_adaptive
+## Programmable Injection (v0.1.2+)
+
+```python
+from cognize.policies import (
+    collapse_soft_decay_fn,
+    realign_tanh_fn,
+    threshold_adaptive_fn
 )
 
-# Run a new signal cycle
+agent.inject_policy(
+    collapse=collapse_soft_decay_fn,
+    realign=realign_tanh_fn,
+    threshold=threshold_adaptive_fn
+)
+
 agent.receive(0.5)
+print(agent.summary())
+```
 
-# Get drift metrics
-print(agent.drift_stats(window=3))
+---
 
-# Export cognition trace
+## Exporting Trace
+
+```python
 agent.export_json("trace.json")
 agent.export_csv("trace.csv")
 ```
@@ -99,19 +113,20 @@ agent.export_csv("trace.csv")
   "delta": 0.19,
   "Θ": 0.35,
   "ruptured": false,
-  "event": "realign",
+  "symbol": "⊙",
   "source": "default"
 }
 ```
+
 ---
 
-[Read the full Cognize User Guide](https://github.com/heraclitus0/cognize/blob/main/docs/USER_GUIDE.md)
+[Full Cognize User Guide →](https://github.com/heraclitus0/cognize/blob/main/docs/USER_GUIDE.md)
 
 ---
 
 ## License
 
-Licensed under the [Apache 2.0 License](LICENSE).
+Licensed under the [Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0).
 
 ---
 
