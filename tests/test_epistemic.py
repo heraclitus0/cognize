@@ -58,5 +58,17 @@ class TestEpistemicStateCore(unittest.TestCase):
         self.assertTrue('mean_drift' in stats)
         self.assertGreater(stats['max_drift'], 0)
 
+    def test_policy_injection_shortcut(self):
+        state = EpistemicState()
+        state.inject_policy(
+            collapse=collapse_soft_decay,
+            realign=realign_tanh,
+            threshold=threshold_adaptive
+        )
+        state.receive(0.6)
+        log = state.last()
+        self.assertIsNotNone(log)
+        self.assertIn(log['symbol'], ['⊙', '⚠'])
+
 if __name__ == '__main__':
     unittest.main()
