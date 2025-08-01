@@ -5,7 +5,7 @@ with open("README.md", encoding="utf-8") as f:
 
 setup(
     name="cognize",
-    version="0.1.1",
+    version="0.1.2",
     author="Pulikanti Sashi Bharadwaj",
     description="Symbolic cognition engine for epistemic drift, rupture detection, and realignment.",
     long_description=long_description,
@@ -28,9 +28,10 @@ setup(
     packages=find_packages(include=["cognize", "cognize.*"]),
     include_package_data=True,
     install_requires=[
-        "numpy",
-        "matplotlib",
-        "pandas"
+        "numpy>=1.21",
+        "pandas>=1.3",
+        "matplotlib>=3.4",
+        "seaborn"
     ],
     python_requires=">=3.8",
 )
