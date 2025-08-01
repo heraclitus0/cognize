@@ -103,6 +103,9 @@ agent.export_csv("trace.csv")
   "source": "default"
 }
 ```
+---
+
+[Read the full Cognize User Guide](https://github.com/heraclitus0/cognize/blob/main/USER_GUIDE_DETAILED.md)
 
 ---
 
