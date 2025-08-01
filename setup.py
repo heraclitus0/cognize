@@ -5,7 +5,7 @@ with open("README.md", encoding="utf-8") as f:
 
 setup(
     name="cognize",
-    version="0.1.3",
+    version="0.1.4",
     author="Pulikanti Sashi Bharadwaj",
     description="Symbolic cognition engine for epistemic drift, rupture detection, and realignment.",
     long_description=long_description,
