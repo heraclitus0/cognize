@@ -1,35 +1,36 @@
-
 <p align="center">
-  <img src="https://raw.githubusercontent.com/heraclitus0/cognize/main/logo.png" width="200"/>
+  <img src="https://raw.githubusercontent.com/heraclitus0/cognize/main/logo.png" width="180"/>
 </p>
 
-# Cognize
+<h1 align="center">Cognize</h1>
 
-**Give any Python system cognition.**
+<p align="center"><em>Programmable cognition for Python systems</em></p>
 
-![License](https://img.shields.io/badge/license-Apache%202.0-blue)
-![Python](https://img.shields.io/badge/python-3.8+-blue)
-![Release](https://img.shields.io/badge/version-v0.1.0-informational)
-![Status](https://img.shields.io/badge/status-beta-orange)
+<p align="center">
+  <a href="https://pypi.org/project/cognize"><img src="https://img.shields.io/pypi/v/cognize?color=blue&label=version" alt="Version"></a>
+  <img src="https://img.shields.io/badge/python-3.8+-blue">
+  <img src="https://img.shields.io/badge/status-beta-orange">
+  <img src="https://img.shields.io/badge/license-Apache%202.0-lightgrey">
+</p>
 
 ---
 
-**Cognize** is a symbolic cognition layer for Python systems — from LLMs to agents to simulations.  
-It enables programmable epistemic control by modeling belief (`V`), reality (`R`), misalignment (`∆`), memory (`E`), and rupture (`Θ`).
+## Overview
+
+**Cognize** is a lightweight cognition engine that tracks epistemic drift and enables rupture-aware reasoning in recursive systems.  
+It models projection (`V`), reality (`R`), distortion (`∆`), misalignment memory (`E`), and rupture thresholds (`Θ`) — and supports programmable logic for collapse, realignment, and intervention.
 
 ---
 
 ## Features
 
-- Drift-aware cognition engine (`EpistemicState`)
-- Programmable rupture thresholds and realignment logic
-- Symbolic rupture and collapse modeling
-- Supports high-dimensional reality inputs (e.g., embeddings)
-- Export cognition logs (`.json`, `.csv`) for external audits
-- Control layer for hallucination detection in LLMs or symbolic gating in agents
-- Minimal, extensible, domain-agnostic
-- Built with symbolic state logic — extensible for memory, attention, or projection systems
-
+- Drift-aware cognitive kernel (`EpistemicState`)
+- Programmable rupture, realignment, and collapse policies
+- Misalignment memory tracking with decay
+- Symbolic cognition trace export (`.json`, `.csv`)
+- Compatible with scalar or vector inputs
+- DSL-ready via runtime injection (`inject_policy`)
+- Lightweight, dependency-minimal, and test-backed
 
 ---
 
@@ -43,87 +44,73 @@ pip install cognize
 
 ## Core Concepts
 
-| Symbol | Meaning                |
-|--------|------------------------|
-| `V`    | Projection (belief)    |
-| `R`    | Reality (signal)       |
-| `∆`    | Distortion             |
-| `Θ`    | Tolerance threshold    |
-| `E`    | Misalignment memory    |
-| `⊙`    | Stable                 |
-| `⚠`    | Rupture                |
-| `∅`    | No signal yet          |
+| Symbol | Meaning             |
+|--------|---------------------|
+| `V`    | Belief / Projection |
+| `R`    | Reality Signal      |
+| `∆`    | Distortion          |
+| `Θ`    | Rupture Threshold   |
+| `E`    | Misalignment Memory |
 
 ---
 
-## Example Usage
+## Quick Usage
 
 ```python
 from cognize import EpistemicState
 
-# Scalar-based epistemic drift tracking
-e = EpistemicState(V0=0.0, threshold=0.4)
+# Initialize agent
+agent = EpistemicState(V0=0.0, threshold=0.35)
 
+# Feed scalar signals
 for R in [0.1, 0.3, 0.6, 0.8]:
-    e.receive(R)
-    print(e.symbol(), e.summary())
+    agent.receive(R)
+    print(agent.summary())
 
-# Access rolling drift statistics
-print(e.drift_stats(window=3))
+# Inject custom rupture logic (optional)
+from cognize.policies import collapse_soft_decay, realign_tanh, threshold_adaptive
 
-# Trigger fallback if cognitive rupture risk is too high
-e.intervene_if_ruptured(lambda: print("⚠ Intervention triggered!"))
+agent.inject_policy(
+    collapse=collapse_soft_decay,
+    realign=realign_tanh,
+    threshold=threshold_adaptive
+)
 
-# Manually realign belief to current signal
-e.realign(R=0.7)
+# Run a new signal cycle
+agent.receive(0.5)
 
-# Export logs
-e.export_json("cognition.json")
-e.export_csv("cognition.csv")
+# Get drift metrics
+print(agent.drift_stats(window=3))
 
-
+# Export cognition trace
+agent.export_json("trace.json")
+agent.export_csv("trace.csv")
 ```
 
-**Expected Output:**
+---
 
+## Example Output
+
+```json
+{
+  "t": 2,
+  "V": 0.41,
+  "R": 0.6,
+  "delta": 0.19,
+  "Θ": 0.35,
+  "ruptured": false,
+  "event": "realign",
+  "source": "default"
+}
 ```
-⊙ {'V': 0.03, 'E': 0.01, 'Θ': 0.4, ...}
-⊙ {...}
-⚠ {'V': 0.0, 'E': 0.0, 'Θ': 0.4, ...}
-{'mean_drift': 0.24, 'std_drift': 0.13, 'max_drift': 0.3, 'min_drift': 0.1}
-⚠ Intervention triggered!
-
-```
-
-**Sample cognition.json output:**
-
-```
-[
-  {
-    "t": 0,
-    "V": 0.03,
-    "R": 0.1,
-    "delta": 0.1,
-    "Θ": 0.4,
-    "ruptured": false,
-    "symbol": "⊙",
-    "source": "default"
-  },
-  ...
-]
-
-```
-
-Cognize also supports vector input (e.g. NumPy arrays) for multi-dimensional drift modeling — useful for embeddings or continuous signals.
 
 ---
 
 ## License
 
-Cognize is released under the [Apache 2.0 License](LICENSE).
+Licensed under the [Apache 2.0 License](LICENSE).
 
 ---
 
 © 2025 Pulikanti Sashi Bharadwaj  
-Original work licensed under Apache 2.0
-
+All rights reserved.
