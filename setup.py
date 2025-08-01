@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="cognize",
-    version="0.1.0",
+    version="0.1.1",
     author="Pulikanti Sashi Bharadwaj",
     description="Symbolic cognition engine for projection modeling and rupture control.",
     long_description=open("README.md", encoding="utf-8").read(),
@@ -21,7 +21,7 @@ setup(
         "Intended Audience :: Developers",
         "Topic :: Scientific/Engineering :: Artificial Intelligence"
     ],
-    packages=find_packages(),
+    packages=["cognize"],
     include_package_data=True,
     install_requires=[
         "numpy",
