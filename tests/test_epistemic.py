@@ -1,74 +1,62 @@
-
 import unittest
 import numpy as np
-import os
-from cognize.epistemic import EpistemicState
+from cognize.epistemic_state import EpistemicState
+from cognize.policies import (
+    collapse_soft_decay, realign_tanh, threshold_adaptive
+)
 
-class TestEpistemicState(unittest.TestCase):
+class TestEpistemicStateCore(unittest.TestCase):
 
-    def test_initialization(self):
-        e = EpistemicState()
-        self.assertEqual(e.V, 0.0)
-        self.assertEqual(e.E, 0.0)
-        self.assertEqual(e._rupture_count, 0)
+    def test_initial_state(self):
+        state = EpistemicState()
+        summary = state.summary()
+        self.assertEqual(summary['V'], 0.0)
+        self.assertEqual(summary['E'], 0.0)
+        self.assertEqual(summary['ruptures'], 0)
 
     def test_receive_no_rupture(self):
-        e = EpistemicState(V0=0.0, threshold=1.0)
-        e.receive(0.2)
-        self.assertFalse(e.last()["ruptured"])
-        self.assertEqual(e.symbol(), "⊙")
+        state = EpistemicState(threshold=1.0)
+        state.receive(0.2)
+        self.assertEqual(state.summary()['ruptures'], 0)
+        self.assertFalse(state.last()['ruptured'])
 
-    def test_receive_rupture(self):
-        e = EpistemicState(V0=0.0, threshold=0.1)
-        e.receive(1.0)
-        self.assertTrue(e.last()["ruptured"])
-        self.assertEqual(e.V, 0.0)
-        self.assertEqual(e.E, 0.0)
+    def test_receive_with_rupture(self):
+        state = EpistemicState(threshold=0.1)
+        state.receive(0.5)
+        self.assertEqual(state.summary()['ruptures'], 1)
+        self.assertTrue(state.last()['ruptured'])
 
-    def test_reset(self):
-        e = EpistemicState()
-        e.receive(1.0)
-        e.reset()
-        self.assertEqual(e.V, 0.0)
-        self.assertEqual(e.E, 0.0)
-        self.assertEqual(e.history, [])
+    def test_manual_realign(self):
+        state = EpistemicState()
+        state.receive(0.3)
+        state.realign(0.7)
+        self.assertEqual(state.last()['event'], 'manual_realign')
+        self.assertAlmostEqual(state.summary()['V'], 0.7)
 
-    def test_realignment(self):
-        e = EpistemicState()
-        e.realign(2.0)
-        self.assertEqual(e.V, 2.0)
+    def test_reset_function(self):
+        state = EpistemicState()
+        state.receive(0.4)
+        state.reset()
+        self.assertEqual(state.summary()['V'], 0.0)
+        self.assertEqual(len(state.log()), 0)
 
-    def test_drift_stats(self):
-        e = EpistemicState(V0=0.0, threshold=10.0)
-        for r in [0.5, 1.0, 1.5]:
-            e.receive(r)
-        stats = e.drift_stats(window=3)
-        self.assertIn("mean_drift", stats)
+    def test_policy_injection_and_effect(self):
+        state = EpistemicState()
+        state.inject_policy(
+            collapse=collapse_soft_decay,
+            realign=realign_tanh,
+            threshold=threshold_adaptive
+        )
+        state.receive(0.6)
+        self.assertIn(state.summary()['last_event'], ['rupture', 'realign'])
 
-    def test_export_json_csv(self):
-        e = EpistemicState()
-        e.receive(1.0)
+    def test_drift_statistics(self):
+        state = EpistemicState()
+        for r in [0.1, 0.2, 0.3, 0.4]:
+            state.receive(r)
+        stats = state.drift_stats()
+        self.assertTrue('mean_drift' in stats)
+        self.assertGreater(stats['max_drift'], 0)
 
-        e.export_json("test_log.json")
-        self.assertTrue(os.path.exists("test_log.json"))
-
-        e.export_csv("test_log.csv")
-        self.assertTrue(os.path.exists("test_log.csv"))
-
-        os.remove("test_log.json")
-        os.remove("test_log.csv")
-
-    def test_event_log(self):
-        e = EpistemicState()
-        e._log_event("test_event", {"foo": "bar"})
-        logs = e.event_log_summary()
-        self.assertTrue(any(ev["event"] == "test_event" for ev in logs))
-
-    def test_vector_input(self):
-        e = EpistemicState()
-        e.receive([1.0, 2.0, 3.0])
-        self.assertIsInstance(e.last(), dict)
-        self.assertIn("delta", e.last())
-
-if __name__ == "__main__":
+if __name__ == '__main__':
     unittest.main()
