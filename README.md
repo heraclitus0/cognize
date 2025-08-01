@@ -10,7 +10,7 @@
   <a href="https://pypi.org/project/cognize"><img src="https://img.shields.io/pypi/v/cognize?color=blue&label=version" alt="Version"></a>
   <img src="https://img.shields.io/badge/python-3.8+-blue">
   <img src="https://img.shields.io/badge/status-beta-orange">
-  <img src="https://img.shields.io/badge/license-Apache%202.0-black">
+  <img src="https://img.shields.io/badge/license-Apache%202.0-red">
 </p>
 
 ---
