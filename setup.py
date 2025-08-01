@@ -1,14 +1,18 @@
 from setuptools import setup, find_packages
 
+with open("README.md", encoding="utf-8") as f:
+    long_description = f.read()
+
 setup(
     name="cognize",
     version="0.1.1",
     author="Pulikanti Sashi Bharadwaj",
-    description="Symbolic cognition engine for projection modeling and rupture control.",
-    long_description=open("README.md", encoding="utf-8").read(),
+    description="Symbolic cognition engine for epistemic drift, rupture detection, and realignment.",
+    long_description=long_description,
     long_description_content_type="text/markdown",
     url="https://github.com/heraclitus0/cognize",
     project_urls={
+        "Documentation": "https://github.com/heraclitus0/cognize/blob/main/docs/USER_GUIDE.md",
         "Source": "https://github.com/heraclitus0/cognize",
         "Bug Tracker": "https://github.com/heraclitus0/cognize/issues",
     },
@@ -19,9 +23,9 @@ setup(
         "Operating System :: OS Independent",
         "Development Status :: 3 - Alpha",
         "Intended Audience :: Developers",
-        "Topic :: Scientific/Engineering :: Artificial Intelligence"
+        "Topic :: Scientific/Engineering :: Artificial Intelligence",
     ],
-    packages=["cognize"],
+    packages=find_packages(include=["cognize", "cognize.*"]),
     include_package_data=True,
     install_requires=[
         "numpy",
