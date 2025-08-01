@@ -1,4 +1,4 @@
-from cognize.epistemic_state import EpistemicState
+from cognize import EpistemicState
 
 agent = EpistemicState()
 
