@@ -18,7 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Symbolic introspection (`summary()`, `drift_stats()`, `rupture_log()`)
 
 ### Changed
-- Refined rupture handling: removed emoji symbols, improved semantic state tracking
+- Refined rupture handling: improved semantic state tracking
 - README redesigned for clarity and PyPI rendering
 - Modularized epistemic logic into `epistemic.py` and `policies.py`
 
