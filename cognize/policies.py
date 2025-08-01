@@ -22,6 +22,11 @@ def collapse_randomized(R, V, E):
     """Collapse to a random small perturbation."""
     return np.random.normal(0, 0.1), 0.0
 
+# 🔁 Self-compatible lambda wrappers
+collapse_reset_fn         = lambda self: collapse_reset(None, self.V, self.E)
+collapse_soft_decay_fn    = lambda self: collapse_soft_decay(None, self.V, self.E)
+collapse_adopt_R_fn       = lambda self: collapse_adopt_R(self.V, self.V, self.E)
+collapse_randomized_fn    = lambda self: collapse_randomized(self.V, self.V, self.E)
 
 ### ------------------------
 ### Realignment Kernels (⊙ variants)
@@ -45,6 +50,11 @@ def realign_decay_adaptive(V, delta, E, k):
     gain = k / (1 + E)
     return V + gain * delta
 
+# Self-compatible lambda wrappers
+realign_linear_fn          = lambda self, R, d: realign_linear(self.V, d, self.E, self.k)
+realign_tanh_fn            = lambda self, R, d: realign_tanh(self.V, d, self.E, self.k)
+realign_bounded_fn         = lambda self, R, d: realign_bounded(self.V, d, self.E, self.k)
+realign_decay_adaptive_fn  = lambda self, R, d: realign_decay_adaptive(self.V, d, self.E, self.k)
 
 ### ------------------------
 ### Threshold Functions (Θ(t))
@@ -65,3 +75,10 @@ def threshold_stochastic(E, t, base=0.35, sigma=0.02):
 def threshold_combined(E, t, base=0.35, a=0.05, sigma=0.01):
     """Adaptive + stochastic threshold model."""
     return base + a * E + np.random.normal(0, sigma)
+
+# Self-compatible lambda wrappers
+threshold_static_fn     = lambda self: threshold_static(self.E, self._time)
+threshold_adaptive_fn   = lambda self: threshold_adaptive(self.E, self._time)
+threshold_stochastic_fn = lambda self: threshold_stochastic(self.E, self._time)
+threshold_combined_fn   = lambda self: threshold_combined(self.E, self._time)
+
