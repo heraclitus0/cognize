@@ -1,12 +1,35 @@
 [project]
 name = "cognize"
-version = "0.1.0"
+version = "0.1.1"
 description = "Symbolic cognition engine for epistemic drift, rupture detection, and realignment."
-authors = [{name="Pulikanti Sashi Bharadwaj"}]
-license = {text = "Apache-2.0"}
+authors = [
+  { name = "Pulikanti Sashi Bharadwaj", email = "bharadwajpulikanti11@gmail.com" }
+]
+license = { text = "Apache-2.0" }
 readme = "README.md"
-requires-python = ">=3.7"
-dependencies = ["numpy", "pandas", "matplotlib", "seaborn"]
+requires-python = ">=3.8"
+
+dependencies = [
+  "numpy",
+  "pandas",
+  "matplotlib",
+  "seaborn"
+]
+
+classifiers = [
+  "License :: OSI Approved :: Apache Software License",
+  "Programming Language :: Python :: 3",
+  "Operating System :: OS Independent",
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence"
+]
+
+[project.urls]
+Homepage = "https://github.com/heraclitus0/cognize"
+Source = "https://github.com/heraclitus0/cognize"
+Issues = "https://github.com/heraclitus0/cognize/issues"
+UserGuide = "https://github.com/heraclitus0/cognize/blob/main/docs/USER_GUIDE.md"
 
 [build-system]
 requires = ["setuptools", "wheel"]
