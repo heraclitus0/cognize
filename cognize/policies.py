@@ -22,7 +22,7 @@ def collapse_randomized(R, V, E):
     """Collapse to a random small perturbation."""
     return np.random.normal(0, 0.1), 0.0
 
-# 🔁 Self-compatible lambda wrappers
+# Self-compatible lambda wrappers
 collapse_reset_fn         = lambda self: collapse_reset(None, self.V, self.E)
 collapse_soft_decay_fn    = lambda self: collapse_soft_decay(None, self.V, self.E)
 collapse_adopt_R_fn       = lambda self: collapse_adopt_R(self.V, self.V, self.E)
