@@ -8,8 +8,7 @@ Part of the Cognize project (https://pypi.org/project/cognize/).
 
 __author__ = "Pulikanti Sashi Bharadwaj"
 __license__ = "Apache 2.0"
-__version__ = "0.1.0"
-
+__version__ = "0.1.2"
 
 import numpy as np
 import uuid
@@ -48,6 +47,11 @@ class EpistemicState:
         self.decay_rate = decay_rate
         self._context_fn = None
 
+        # Injection hooks
+        self._realign_fn = None
+        self._collapse_fn = None
+        self._threshold_fn = None
+
         # Internal
         self.history = []
         self.meta_ruptures = []
@@ -65,20 +69,27 @@ class EpistemicState:
         """Receive one or multiple reality signals R (float or list)"""
         R_val = self._resolve_reality(R)
         delta = abs(R_val - self.V)
-        ruptured = delta > self.Θ
+        threshold = self._threshold_fn(self) if self._threshold_fn else self.Θ
+        ruptured = delta > threshold
         self._last_symbol = "⚠" if ruptured else "⊙"
 
         if ruptured:
-            self.V, self.E = 0.0, 0.0
+            if self._collapse_fn:
+                self.V, self.E = self._collapse_fn(self)
+            else:
+                self.V, self.E = 0.0, 0.0
             self._rupture_count += 1
             self.meta_ruptures.append({
                 "time": self._time,
-                "rupture_pressure": delta - self.Θ,
+                "rupture_pressure": delta - threshold,
                 "source": source
             })
             self._trigger("on_rupture")
         else:
-            self.V += self.k * delta * (1 + self.E)
+            if self._realign_fn:
+                self.V = self._realign_fn(self, R_val, delta)
+            else:
+                self.V += self.k * delta * (1 + self.E)
             self.E += 0.1 * delta
             self.E *= self.decay_rate
 
@@ -88,7 +99,7 @@ class EpistemicState:
                 "V": self.V,
                 "R": R_val,
                 "delta": delta,
-                "Θ": self.Θ,
+                "Θ": threshold,
                 "ruptured": ruptured,
                 "symbol": self._last_symbol,
                 "source": source
@@ -135,6 +146,12 @@ class EpistemicState:
         })
         self._time += 1
 
+    def inject_policy(self, threshold=None, realign=None, collapse=None):
+        """Injects programmable logic into threshold, realignment, and collapse."""
+        self._threshold_fn = threshold
+        self._realign_fn = realign
+        self._collapse_fn = collapse
+
     def bind_context(self, fn):
         self._context_fn = fn
 
@@ -173,6 +190,7 @@ class EpistemicState:
 
     def rupture_log(self):
         return self.meta_ruptures
+
     def drift_stats(self, window=10):
         """Returns rolling statistics of delta values over last `window` steps."""
         deltas = [step['delta'] for step in self.history[-window:] if 'delta' in step]
