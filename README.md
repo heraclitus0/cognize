@@ -71,51 +71,14 @@ for R in [0.1, 0.3, 0.6, 0.8]:
     print(agent.summary())
 ```
 
----
-
-## Programmable Injection (v0.1.2+)
-
-```python
-from cognize.policies import (
-    collapse_soft_decay_fn,
-    realign_tanh_fn,
-    threshold_adaptive_fn
-)
-
-agent.inject_policy(
-    collapse=collapse_soft_decay_fn,
-    realign=realign_tanh_fn,
-    threshold=threshold_adaptive_fn
-)
-
-agent.receive(0.5)
-print(agent.summary())
-```
-
----
-
-## Exporting Trace
-
-```python
-agent.export_json("trace.json")
-agent.export_csv("trace.csv")
-```
-
----
 
 ## Example Output
 
 ```json
-{
-  "t": 2,
-  "V": 0.41,
-  "R": 0.6,
-  "delta": 0.19,
-  "Θ": 0.35,
-  "ruptured": false,
-  "symbol": "⊙",
-  "source": "default"
-}
+{'id': 'ccd84e81', 't': 1, 'V': 0.03, 'E': 0.009000000000000003, 'Θ': 0.35, 'ruptures': 0, 'last_symbol': '⊙', 'identity': {}}
+{'id': 'ccd84e81', 't': 2, 'V': 0.111729, 'E': 0.032400000000000005, 'Θ': 0.35, 'ruptures': 0, 'last_symbol': '⊙', 'identity': {}}
+{'id': 'ccd84e81', 't': 3, 'V': 0.0, 'E': 0.0, 'Θ': 0.35, 'ruptures': 1, 'last_symbol': '⚠', 'identity': {}}
+{'id': 'ccd84e81', 't': 4, 'V': 0.0, 'E': 0.0, 'Θ': 0.35, 'ruptures': 2, 'last_symbol': '⚠', 'identity': {}}
 ```
 
 ---
