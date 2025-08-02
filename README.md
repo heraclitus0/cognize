@@ -74,12 +74,13 @@ for R in [0.1, 0.3, 0.6, 0.8]:
 
 ## Example Output
 
-'''json
+```jason
 {'id': 'ccd84e81', 't': 1, 'V': 0.03, 'E': 0.00003, 'Θ': 0.35, 'ruptures': 0, 'last_symbol': '⊙', 'identity': {}} 
 {'id': 'ccd84e81', 't': 2, 'V': 0.11, 'E': 0.0324, 'Θ': 0.35, 'ruptures': 0, 'last_symbol': '⊙', 'identity': {}}
 {'id': 'ccd84e81', 't': 3, 'V': 0.0, 'E': 0.0, 'Θ': 0.35, 'ruptures': 1, 'last_symbol': '⚠', 'identity': {}} 
 {'id': 'ccd84e81', 't': 4, 'V': 0.0, 'E': 0.0, 'Θ': 0.35, 'ruptures': 2, 'last_symbol': '⚠', 'identity': {}}
-'''
+```
+
 
 
 ---
