@@ -1,6 +1,6 @@
 [project]
 name = "cognize"
-version = "0.1.4"
+version = "0.1.5"
 description = "Symbolic cognition engine for epistemic drift, rupture detection, and realignment."
 keywords = ["cognition", "epistemic", "rupture", "projection", "AI", "symbolic", "drift"]
 authors = [
