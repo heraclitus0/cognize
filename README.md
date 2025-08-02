@@ -13,6 +13,11 @@
   <img src="https://img.shields.io/badge/license-Apache%202.0-red">
 </p>
 
+![PyPI](https://img.shields.io/pypi/v/cognize)
+![License](https://img.shields.io/pypi/l/cognize)
+![Downloads](https://static.pepy.tech/badge/cognize)
+
+
 ---
 
 ## Overview
