@@ -15,7 +15,7 @@ Symbols:
 
 __author__ = "Pulikanti Sashi Bharadwaj"
 __license__ = "Apache 2.0"
-__version__ = "0.1.4"
+__version__ = "0.1.5"
 
 import numpy as np
 import uuid
