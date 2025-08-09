@@ -61,25 +61,37 @@ pip install cognize
 ## Quick Usage
 
 ```python
+# Example: Robot belief drift and recovery
 from cognize import EpistemicState
+from cognize.policies import (
+    collapse_soft_decay_fn,
+    realign_tanh_fn,
+    threshold_adaptive_fn
+)
 
-# Initialize agent
-agent = EpistemicState(V0=0.0, threshold=0.35)
+# Robot starts with belief = 0.5 about "path is clear"
+robot = EpistemicState(V0=0.5)
+robot.inject_policy(
+    collapse=collapse_soft_decay_fn,
+    realign=realign_tanh_fn,
+    threshold=threshold_adaptive_fn
+)
 
-# Feed signals
-for R in [0.1, 0.3, 0.6, 0.8]:
-    agent.receive(R)
-    print(agent.summary())
+# Sensor readings over time (0 = blocked, 1 = clear)
+sensor_readings = [0.1, 0.3, 0.7, 0.9]
+
+for reading in sensor_readings:
+    robot.receive(reading)
+
+print(robot.log())
 ```
 
 
 ## Example Output
 
 ```jason
-{'id': 'ccd84e81', 't': 1, 'V': 0.03, 'E': 0.00003, 'Θ': 0.35, 'ruptures': 0, 'last_symbol': '⊙', 'identity': {}} 
-{'id': 'ccd84e81', 't': 2, 'V': 0.11, 'E': 0.0324, 'Θ': 0.35, 'ruptures': 0, 'last_symbol': '⊙', 'identity': {}}
-{'id': 'ccd84e81', 't': 3, 'V': 0.0, 'E': 0.0, 'Θ': 0.35, 'ruptures': 1, 'last_symbol': '⚠', 'identity': {}} 
-{'id': 'ccd84e81', 't': 4, 'V': 0.0, 'E': 0.0, 'Θ': 0.35, 'ruptures': 2, 'last_symbol': '⚠', 'identity': {}}
+[{'t': 0, 'V': 0.25, 'R': 0.1, '∆': 0.4, 'Θ': 0.35, 'ruptured': True, 'symbol': '⚠', 'source': 'default'}, {'t': 1, 'V': 0.26499887510124076, 'R': 0.3, '∆': 0.04999999999999999, 'Θ': 0.35, 'ruptured': False, 'symbol': '⊙', 'source': 'default'}, {'t': 2, 'V': 0.13249943755062038, 'R': 0.7, '∆': 0.4350011248987592, 'Θ': 0.35022499999999995, 'ruptured': np.True_, 'symbol': '⚠', 'source': 'default'}, {'t': 3, 'V': 0.06624971877531019, 'R': 0.9, '∆': 0.7675005624493796, 'Θ': 0.3500675, 'ruptured': np.True_, 'symbol': '⚠', 'source': 'default'}]
+
 ```
 
 
