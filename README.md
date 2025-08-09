@@ -61,37 +61,80 @@ pip install cognize
 ## Quick Usage
 
 ```python
-# Example: Robot belief drift and recovery
+import json
+import numpy as np
 from cognize import EpistemicState
-from cognize.policies import (
-    collapse_soft_decay_fn,
-    realign_tanh_fn,
-    threshold_adaptive_fn
-)
+from cognize.policies import collapse_soft_decay_fn, realign_tanh_fn, threshold_adaptive_fn
 
-# Robot starts with belief = 0.5 about "path is clear"
+def to_py(x):
+    if isinstance(x, (np.bool_,)):        return bool(x)
+    if isinstance(x, (np.integer,)):      return int(x)
+    if isinstance(x, (np.floating,)):     return float(x)
+    if isinstance(x, (list, tuple)):      return [to_py(v) for v in x]
+    if isinstance(x, dict):               return {k: to_py(v) for k, v in x.items()}
+    return x
+
 robot = EpistemicState(V0=0.5)
 robot.inject_policy(
     collapse=collapse_soft_decay_fn,
     realign=realign_tanh_fn,
-    threshold=threshold_adaptive_fn
+    threshold=threshold_adaptive_fn,
 )
 
-# Sensor readings over time (0 = blocked, 1 = clear)
 sensor_readings = [0.1, 0.3, 0.7, 0.9]
-
 for reading in sensor_readings:
     robot.receive(reading)
 
-print(robot.log())
+print(json.dumps(to_py(robot.log()), indent=2, ensure_ascii=False))
+
 ```
 
 
 ## Example Output
 
 ```jason
-[{'t': 0, 'V': 0.25, 'R': 0.1, '∆': 0.4, 'Θ': 0.35, 'ruptured': True, 'symbol': '⚠', 'source': 'default'}, {'t': 1, 'V': 0.26499887510124076, 'R': 0.3, '∆': 0.04999999999999999, 'Θ': 0.35, 'ruptured': False, 'symbol': '⊙', 'source': 'default'}, {'t': 2, 'V': 0.13249943755062038, 'R': 0.7, '∆': 0.4350011248987592, 'Θ': 0.35022499999999995, 'ruptured': np.True_, 'symbol': '⚠', 'source': 'default'}, {'t': 3, 'V': 0.06624971877531019, 'R': 0.9, '∆': 0.7675005624493796, 'Θ': 0.3500675, 'ruptured': np.True_, 'symbol': '⚠', 'source': 'default'}]
-
+[
+  {
+    "t": 0,
+    "V": 0.25,
+    "R": 0.1,
+    "∆": 0.4,
+    "Θ": 0.35,
+    "ruptured": true,
+    "symbol": "⚠",
+    "source": "default"
+  },
+  {
+    "t": 1,
+    "V": 0.26499887510124076,
+    "R": 0.3,
+    "∆": 0.04999999999999999,
+    "Θ": 0.35,
+    "ruptured": false,
+    "symbol": "⊙",
+    "source": "default"
+  },
+  {
+    "t": 2,
+    "V": 0.13249943755062038,
+    "R": 0.7,
+    "∆": 0.4350011248987592,
+    "Θ": 0.35022499999999995,
+    "ruptured": true,
+    "symbol": "⚠",
+    "source": "default"
+  },
+  {
+    "t": 3,
+    "V": 0.06624971877531019,
+    "R": 0.9,
+    "∆": 0.7675005624493796,
+    "Θ": 0.3500675,
+    "ruptured": true,
+    "symbol": "⚠",
+    "source": "default"
+  }
+]
 ```
 
 
