@@ -444,4 +444,3 @@ class EpistemicGraph:
                 for dst, e in nbrs.items()
             }
         return adj
-
