@@ -246,6 +246,70 @@ class PolicyManager:
                  cooldown_steps: int = 30):
         if not base_specs:
             raise ValueError("PolicyManager requires at least one PolicySpec.")
+    def set_param_space(self, space: Dict[str, Dict[str, ParamRange]]) -> None:
+        self.param_space = ParamSpace(space)
+
+    def evolve_if_due(self, state, ctx: Dict[str, Any], recent_evidence: List[Any]) -> Optional[PolicySpec]:
+         step = int(ctx.get("t", len(state.history)))
+    if step % max(1, self.evolve_every) != 0:
+        return None
+
+    bucket = self.context_bucket(ctx)
+    # pick a base spec: top for bucket or any available
+    base_ids = self.memory.top_ids(bucket, k=1)
+    base_spec_id = base_ids[0] if base_ids else (next(iter(self.specs)) if self.specs else None)
+    if base_spec_id is None:
+        return None
+    base_spec = self.specs[base_spec_id]
+    bounds = self.param_space.bounds_for(base_spec.id)
+    if not bounds:
+        return None  # nothing tunable for this spec
+
+    # mutate within bounds
+    candidate_params = _mutate_params(base_spec.params, bounds, rate=self.evolve_rate)
+    cand = PolicySpec(
+        id=f"{base_spec.id}#mut@{step}",
+        threshold_fn=base_spec.threshold_fn,
+        realign_fn=base_spec.realign_fn,
+        collapse_fn=base_spec.collapse_fn,
+        params=candidate_params,
+        safety_level="experimental",
+        notes=f"mutated from {base_spec.id}"
+    )
+
+    # Temporarily apply params to state during shadow replay:
+    # We assume policies read state.k, state.Θ only indirectly; params here are metadata.
+    # If you want params to actually alter behavior, read them inside policy callables or map them to state before replay.
+    # Minimal approach: map common params onto state via a thin wrapper.
+    # Quick wrapper:
+    def _apply_params_to_state(st, p):
+        if "k" in p: st.k = float(p["k"])
+        if "Θ" in p: st.Θ = float(p["Θ"])
+
+    s = copy.deepcopy(state)
+    _apply_params_to_state(s, candidate_params)
+    cand_reward, cand_flags = self.shadow.replay(s, cand, recent_evidence)
+
+    s2 = copy.deepcopy(state)
+    _apply_params_to_state(s2, base_spec.params)
+    base_reward, _ = self.shadow.replay(s2, base_spec, recent_evidence)
+
+    unsafe = cand_flags.get("rupture_storm") or cand_flags.get("oscillation") or cand_flags.get("runaway_E")
+    if (cand_reward > self.evolve_margin * base_reward) and not unsafe:
+        # Register and promote
+        self.specs[cand.id] = cand
+        state.inject_policy(**cand.fns())
+        # Also map params onto live state
+        _apply_params_to_state(state, candidate_params)
+        self.memory.remember(bucket, cand, cand_reward)
+        self.last_promotion = {"id": cand.id, "bucket": bucket, "reward": float(cand_reward), "baseline_reward": float(base_reward), "flags": cand_flags, "step": step}
+        if hasattr(state, "_log_event"):
+            state._log_event("policy_evolved", self.last_promotion)
+        return cand
+    else:
+        # Remember trial baseline for learning, even if not promoted
+        self.memory.remember(bucket, base_spec, base_reward)
+        return None
         self.specs: Dict[str, PolicySpec] = {s.id: s for s in base_specs}
         self.memory = memory or PolicyMemory()
         self.shadow = shadow or ShadowRunner()
@@ -254,6 +318,10 @@ class PolicyManager:
         self.cooldown_steps = int(max(0, cooldown_steps))
         self._last_promotion_step: Optional[int] = None
         self.last_promotion: Optional[Dict[str, Any]] = None
+        self.param_space: ParamSpace = ParamSpace()
+        self.evolve_every: int = 30
+        self.evolve_rate: float = 1.0
+        self.evolve_margin: float = 1.02
 
     # ---- context bucketing ----
     @staticmethod
