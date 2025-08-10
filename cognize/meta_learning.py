@@ -122,6 +122,17 @@ class PolicyMemory:
             if len(out) >= k:
                 break
         return out
+   
+    def save(self,path: str) -> None:
+        with open(parh,"w",encoding="utf-8") as f:
+            json.dump(self.records, f, indent=2, ensure_ascii=False)
+
+    def load(self, path: str) -> None:
+        try:
+            with open(path,"r",encoding="utf-8") as f:
+                self.records = json.load(f)
+        except FileNotFoundError :
+            self.records = []
 
     # Optional: inspection / persistence
     def to_json(self) -> str:
