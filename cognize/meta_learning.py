@@ -17,7 +17,7 @@ import json
 import time
 import numpy as np
 
-# Reuse kernel's PolicySpec to avoid duplication.
+# Reuses kernel's PolicySpec to avoid duplication.
 from .epistemic import PolicySpec
 
 
