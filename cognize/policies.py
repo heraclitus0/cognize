@@ -18,8 +18,9 @@ Notes
 """
 
 from __future__ import annotations
-import numpy as np
+
 from typing import Dict, Callable, Tuple, Optional, Any
+import numpy as np
 
 # --------------
 # Threshold (Θ)
@@ -33,19 +34,19 @@ def threshold_adaptive(state, a: float = 0.05, cap: float = 1.0) -> float:
     """Θ_t = base + a * E (bounded)."""
     a = float(np.clip(a, 0.0, 1.0))
     cap = float(np.clip(cap, 0.0, 10.0))
-    return float(state.Θ + np.clip(a * state.E, 0.0, cap))
+    return float(state.Θ + np.clip(a * float(state.E), 0.0, cap))
 
 def threshold_stochastic(state, sigma: float = 0.01) -> float:
     """Baseline Θ with small Gaussian exploration noise."""
     sigma = float(np.clip(sigma, 0.0, 0.2))
-    return float(state.Θ + np.random.normal(0.0, sigma))
+    return float(state.Θ + float(np.random.normal(0.0, sigma)))
 
 def threshold_combined(state, a: float = 0.05, sigma: float = 0.01, cap: float = 1.0) -> float:
     """Adaptive + stochastic."""
     a = float(np.clip(a, 0.0, 1.0))
     sigma = float(np.clip(sigma, 0.0, 0.2))
-    adapt = np.clip(a * state.E, 0.0, cap)
-    return float(state.Θ + adapt + np.random.normal(0.0, sigma))
+    adapt = float(np.clip(a * float(state.E), 0.0, cap))
+    return float(state.Θ + adapt + float(np.random.normal(0.0, sigma)))
 
 # --------------
 # Realign (⊙)
@@ -58,8 +59,8 @@ def realign_linear(state, R_val: float, delta: float) -> float:
     """
     k = float(np.clip(getattr(state, "k", 0.3), 0.0, 2.0))
     step = k * float(delta) * (1.0 + float(state.E))
-    step = float(np.clip(step, -state.step_cap, state.step_cap))
-    sign = 1.0 if (R_val - float(state.V)) >= 0.0 else -1.0
+    step = float(np.clip(step, -float(getattr(state, "step_cap", 1.0)), float(getattr(state, "step_cap", 1.0))))
+    sign = 1.0 if (float(R_val) - float(state.V)) >= 0.0 else -1.0
     return float(state.V) + sign * step
 
 def realign_tanh(state, R_val: float, delta: float) -> float:
@@ -68,9 +69,9 @@ def realign_tanh(state, R_val: float, delta: float) -> float:
     """
     k = float(np.clip(getattr(state, "k", 0.3), 0.0, 2.0))
     eps = float(max(getattr(state, "epsilon", 1e-3), 1e-9))
-    gain = np.tanh(k * float(delta)) * (1.0 + np.tanh(float(state.E) / eps))
-    gain = float(np.clip(gain, -state.step_cap, state.step_cap))
-    sign = 1.0 if (R_val - float(state.V)) >= 0.0 else -1.0
+    gain = float(np.tanh(k * float(delta))) * (1.0 + float(np.tanh(float(state.E) / eps)))
+    gain = float(np.clip(gain, -float(getattr(state, "step_cap", 1.0)), float(getattr(state, "step_cap", 1.0))))
+    sign = 1.0 if (float(R_val) - float(state.V)) >= 0.0 else -1.0
     return float(state.V) + sign * gain
 
 def realign_bounded(state, R_val: float, delta: float, cap: float = 1.0) -> float:
@@ -79,9 +80,9 @@ def realign_bounded(state, R_val: float, delta: float, cap: float = 1.0) -> floa
     """
     k = float(np.clip(getattr(state, "k", 0.3), 0.0, 2.0))
     step = k * float(delta) * (1.0 + float(state.E))
-    cap = float(max(1e-6, min(cap, getattr(state, "step_cap", 1.0))))
+    cap = float(max(1e-6, min(float(cap), float(getattr(state, "step_cap", 1.0)))))
     step = float(np.clip(step, -cap, cap))
-    sign = 1.0 if (R_val - float(state.V)) >= 0.0 else -1.0
+    sign = 1.0 if (float(R_val) - float(state.V)) >= 0.0 else -1.0
     return float(state.V) + sign * step
 
 def realign_decay_adaptive(state, R_val: float, delta: float) -> float:
@@ -90,8 +91,8 @@ def realign_decay_adaptive(state, R_val: float, delta: float) -> float:
     """
     k = float(np.clip(getattr(state, "k", 0.3) / (1.0 + float(state.E)), 0.0, 1.0))
     step = k * float(delta)
-    step = float(np.clip(step, -state.step_cap, state.step_cap))
-    sign = 1.0 if (R_val - float(state.V)) >= 0.0 else -1.0
+    step = float(np.clip(step, -float(getattr(state, "step_cap", 1.0)), float(getattr(state, "step_cap", 1.0))))
+    sign = 1.0 if (float(R_val) - float(state.V)) >= 0.0 else -1.0
     return float(state.V) + sign * step
 
 # --------------
@@ -130,21 +131,22 @@ def collapse_randomized(state, R_val: Optional[float] = None, sigma: float = 0.1
 # --------------
 
 # Collapse legacy
-def _collapse_reset_legacy(R, V, E):            return 0.0, 0.0
-def _collapse_soft_decay_legacy(R, V, E, gamma=0.5, beta=0.3): return V * gamma, E * beta
-def _collapse_adopt_R_legacy(R, V, E):          return R, 0.0
-def _collapse_randomized_legacy(R, V, E):       return float(np.random.normal(0.0, 0.1)), 0.0
+def _collapse_reset_legacy(R, V, E):                                     return 0.0, 0.0
+def _collapse_soft_decay_legacy(R, V, E, gamma=0.5, beta=0.3):            return V * gamma, E * beta
+def _collapse_adopt_R_legacy(R, V, E):                                    return R, 0.0
+def _collapse_randomized_legacy(R, V, E):                                 return float(np.random.normal(0.0, 0.1)), 0.0
 
+# Self-compatible callables used by EpistemicState.inject_policy(old_names...)
 collapse_reset_fn       = lambda self: collapse_reset(self, None)
 collapse_soft_decay_fn  = lambda self: collapse_soft_decay(self, None)
 collapse_adopt_R_fn     = lambda self: collapse_adopt_R(self, float(self.V))
 collapse_randomized_fn  = lambda self: collapse_randomized(self, None)
 
 # Realign legacy
-def _realign_linear_legacy(V, delta, E, k):         return V + k * delta * (1 + E)
-def _realign_tanh_legacy(V, delta, E, k):           return V + np.tanh(k * delta) * (1 + E)
-def _realign_bounded_legacy(V, delta, E, k, cap=1.):return V + min(k * delta * (1 + E), cap)
-def _realign_decay_adaptive_legacy(V, delta, E, k): return V + (k / (1 + E)) * delta
+def _realign_linear_legacy(V, delta, E, k):           return V + k * delta * (1 + E)
+def _realign_tanh_legacy(V, delta, E, k):             return V + np.tanh(k * delta) * (1 + E)
+def _realign_bounded_legacy(V, delta, E, k, cap=1.):  return V + min(k * delta * (1 + E), cap)
+def _realign_decay_adaptive_legacy(V, delta, E, k):   return V + (k / (1 + E)) * delta
 
 realign_linear_fn          = lambda self, R, d: realign_linear(self, float(R), float(d))
 realign_tanh_fn            = lambda self, R, d: realign_tanh(self, float(R), float(d))
@@ -152,10 +154,11 @@ realign_bounded_fn         = lambda self, R, d: realign_bounded(self, float(R), 
 realign_decay_adaptive_fn  = lambda self, R, d: realign_decay_adaptive(self, float(R), float(d))
 
 # Threshold legacy
-def _threshold_static_legacy(E, t, base=0.35):                return float(base)
-def _threshold_adaptive_legacy(E, t, base=0.35, a=0.05):      return float(base + a * E)
-def _threshold_stochastic_legacy(E, t, base=0.35, sigma=0.02):return float(base + np.random.normal(0, sigma))
-def _threshold_combined_legacy(E, t, base=0.35, a=0.05, sigma=0.01): return float(base + a * E + np.random.normal(0, sigma))
+def _threshold_static_legacy(E, t, base=0.35):                 return float(base)
+def _threshold_adaptive_legacy(E, t, base=0.35, a=0.05):       return float(base + a * E)
+def _threshold_stochastic_legacy(E, t, base=0.35, sigma=0.02): return float(base + float(np.random.normal(0, sigma)))
+def _threshold_combined_legacy(E, t, base=0.35, a=0.05, sigma=0.01):
+    return float(base + a * E + float(np.random.normal(0, sigma)))
 
 threshold_static_fn     = lambda self: threshold_static(self)
 threshold_adaptive_fn   = lambda self: threshold_adaptive(self)
@@ -184,5 +187,17 @@ REGISTRY: Dict[str, Dict[str, Callable[..., Any]]] = {
         "soft_decay": collapse_soft_decay,
         "adopt_R": collapse_adopt_R,
         "randomized": collapse_randomized,
-    }
+    },
 }
+
+__all__ = [
+    # current API
+    "threshold_static", "threshold_adaptive", "threshold_stochastic", "threshold_combined",
+    "realign_linear", "realign_tanh", "realign_bounded", "realign_decay_adaptive",
+    "collapse_reset", "collapse_soft_decay", "collapse_adopt_R", "collapse_randomized",
+    "REGISTRY",
+    # legacy-compatible wrappers (kept for back-compat)
+    "threshold_static_fn", "threshold_adaptive_fn", "threshold_stochastic_fn", "threshold_combined_fn",
+    "realign_linear_fn", "realign_tanh_fn", "realign_bounded_fn", "realign_decay_adaptive_fn",
+    "collapse_reset_fn", "collapse_soft_decay_fn", "collapse_adopt_R_fn", "collapse_randomized_fn",
+]
