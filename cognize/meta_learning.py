@@ -4,74 +4,84 @@
 Cognize Meta-Learning (Runtime Policy Adaptation)
 =================================================
 
-Purpose
--------
-Selects (and later, synthesizes) the best epistemic policies at *runtime* by
-evaluating candidates in a shadow run, comparing rewards, and promoting wins.
-Bounded, template-based: no arbitrary code-gen.
-
-Key Concepts
-------------
-- PolicySpec:    Threshold (Θ), Realign (⊙), Collapse (post-Θ) callables + params.
-- PolicyMemory:  (Context bucket → policy → reward) records, with cap + JSON I/O.
-- ShadowRunner:  Clones state, replays recent evidence, computes reward & safety.
-- PolicyManager: ε-greedy + contextual top-k, promotion margin, cooldown, logging.
-
-Notes
------
-- Context is intentionally small: we *bucket* it to avoid overfitting.
-- Safety first: we do not promote if safety flags trigger (oscillation, storms).
-- Determinism: Determined by upstream seeding of numpy in EpistemicState.
-
-Public API (stable)
--------------------
-- class PolicySpec
-- class PolicyMemory
-- class ShadowRunner
-- class PolicyManager
+Selects (and can evolve) epistemic policies at runtime via shadow evaluation.
+Safeguards: ε-greedy, safety flags, promotion margins, and bounded parameter evolution.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional, Any, Tuple
-import numpy as np
 import copy
 import json
 import time
+import numpy as np
+
+# Reuse kernel's PolicySpec to avoid duplication.
+from .epistemic import PolicySpec
 
 
-# ---------------------------
-# PolicySpec
-# ---------------------------
+# ---------------------------------------------------------------------
+# Parameter ranges for bounded evolution
+# ---------------------------------------------------------------------
 
 @dataclass
-class PolicySpec:
-    """Container for a safe policy triple with metadata."""
-    id: str
-    threshold_fn: Callable  # fn(state) -> float
-    realign_fn: Callable    # fn(state, R_val: float, delta: float) -> float
-    collapse_fn: Callable   # fn(state, R_val: Optional[float]) -> (V', E')
-    params: Dict[str, Any] = field(default_factory=dict)
-    safety_level: str = "standard"  # "standard" | "strict" | "experimental"
-    notes: str = ""
+class ParamRange:
+    low: float
+    high: float
+    sigma: float = 0.05  # relative mutation noise scale (fraction of range)
 
-    def fns(self) -> Dict[str, Callable]:
-        return {
-            "threshold": self.threshold_fn,
-            "realign": self.realign_fn,
-            "collapse": self.collapse_fn,
-        }
+    def clamp(self, x: float) -> float:
+        return float(min(max(x, self.low), self.high))
 
 
-# ---------------------------
+class ParamSpace:
+    """
+    Mapping: policy_id -> param_name -> ParamRange
+    Example:
+      {
+        "cautious": {"k": ParamRange(0.05, 0.4), "a": ParamRange(0.01, 0.2)}
+      }
+    """
+    def __init__(self, space: Optional[Dict[str, Dict[str, ParamRange]]] = None):
+        self._space: Dict[str, Dict[str, ParamRange]] = space or {}
+
+    def set(self, space: Dict[str, Dict[str, ParamRange]]) -> None:
+        self._space = space
+
+    def bounds_for(self, policy_id: str) -> Dict[str, ParamRange]:
+        return self._space.get(policy_id, {})
+
+    def is_empty(self) -> bool:
+        return not any(self._space.values())
+
+
+def _mutate_params(params: Dict[str, Any],
+                   bounds: Dict[str, ParamRange],
+                   rate: float = 1.0,
+                   rng: Optional[np.random.Generator] = None) -> Dict[str, Any]:
+    """
+    Gaussian mutation within bounds for numeric params only.
+    Non-numeric params are copied through unchanged.
+    """
+    rng = rng or np.random.default_rng()
+    out: Dict[str, Any] = dict(params)
+    for k, pr in bounds.items():
+        base = float(params.get(k, (pr.low + pr.high) * 0.5))
+        span = (pr.high - pr.low)
+        noise = rng.normal(loc=0.0, scale=max(1e-9, pr.sigma)) * span * float(rate)
+        out[k] = pr.clamp(base + noise)
+    return out
+
+
+# ---------------------------------------------------------------------
 # PolicyMemory
-# ---------------------------
+# ---------------------------------------------------------------------
 
 class PolicyMemory:
     """
     Rolling memory of (context bucket, policy id, params, reward).
-    Provides simple top-k lookup; can be JSON-dumped for audit.
+    Provides top-k lookup; supports JSON persistence.
     """
     def __init__(self, cap: int = 5000):
         self.records: List[Dict[str, Any]] = []
@@ -84,13 +94,13 @@ class PolicyMemory:
             return v
         if isinstance(v, (list, tuple)):
             return list(v)
-        if isinstance(v, (dict,)):
+        if isinstance(v, dict):
             return {k: PolicyMemory._sanitize(val) for k, val in v.items()}
-        if isinstance(v, (_np.integer,)):
+        if isinstance(v, _np.integer):
             return int(v)
-        if isinstance(v, (_np.floating,)):
+        if isinstance(v, _np.floating):
             return float(v)
-        if isinstance(v, (_np.ndarray,)):
+        if isinstance(v, _np.ndarray):
             return _np.asarray(v).tolist()
         return str(v)
 
@@ -98,7 +108,7 @@ class PolicyMemory:
         rec = {
             "ctx_bucket": ctx_bucket,
             "id": spec.id,
-            "params": {k: self._sanitize(v) for k, v in spec.params.items()},
+            "params": {k: self._sanitize(v) for k, v in getattr(spec, "params", {}).items()},
             "reward": float(reward),
             "ts": time.time(),
         }
@@ -110,7 +120,6 @@ class PolicyMemory:
         """Return top-k policy ids for this context bucket; fallback to global."""
         if not self.records:
             return []
-        # Filter by bucket first
         filt = [r for r in self.records if r["ctx_bucket"] == ctx_bucket]
         source = filt if filt else self.records
         ordered = sorted(source, key=lambda r: r["reward"], reverse=True)
@@ -122,19 +131,20 @@ class PolicyMemory:
             if len(out) >= k:
                 break
         return out
-   
-    def save(self,path: str) -> None:
-        with open(parh,"w",encoding="utf-8") as f:
+
+    # Persistence helpers used by EpistemicState.save/load helpers
+    def save(self, path: str) -> None:
+        with open(path, "w", encoding="utf-8") as f:
             json.dump(self.records, f, indent=2, ensure_ascii=False)
 
     def load(self, path: str) -> None:
         try:
-            with open(path,"r",encoding="utf-8") as f:
+            with open(path, "r", encoding="utf-8") as f:
                 self.records = json.load(f)
-        except FileNotFoundError :
+        except FileNotFoundError:
             self.records = []
 
-    # Optional: inspection / persistence
+    # Optional inspection
     def to_json(self) -> str:
         return json.dumps(self.records, indent=2)
 
@@ -143,9 +153,9 @@ class PolicyMemory:
             json.dump(self.records, f, indent=2, ensure_ascii=False)
 
 
-# ---------------------------
+# ---------------------------------------------------------------------
 # Reward & Safety utilities
-# ---------------------------
+# ---------------------------------------------------------------------
 
 def default_reward(window: List[Dict[str, Any]]) -> float:
     """
@@ -165,8 +175,8 @@ def safety_flags(window: List[Dict[str, Any]]) -> Dict[str, Any]:
     """
     Simple online safety checks:
       - rupture_storm: rupture rate above 0.5 over window
-      - oscillation: alternating rupture pattern (rudimentary)
-      - runaway_E: E grows monotonically (if E logged in entries)
+      - oscillation: alternating rupture pattern
+      - runaway_E: E grows monotonically (if E logged)
     """
     import numpy as _np
     if not window:
@@ -175,7 +185,7 @@ def safety_flags(window: List[Dict[str, Any]]) -> Dict[str, Any]:
     rupt_seq = _np.array([1 if w.get("ruptured", False) else 0 for w in window], dtype=int)
     storm = rupt_seq.mean() > 0.5
 
-    # Oscillation heuristic: many sign changes between 0/1 across the window
+    # Oscillation heuristic: many flips across window
     changes = _np.abs(_np.diff(rupt_seq)).sum()
     osc = changes >= max(4, len(rupt_seq) // 3)
 
@@ -184,18 +194,18 @@ def safety_flags(window: List[Dict[str, Any]]) -> Dict[str, Any]:
     runaway = False
     if Es.size >= 4:
         diffs = _np.diff(Es)
-        runaway = _np.all(diffs > 0.0) and Es[-1] > Es[0] * 1.2  # monotonic + 20% increase
+        runaway = _np.all(diffs > 0.0) and Es[-1] > Es[0] * 1.2
 
     return {"rupture_storm": bool(storm), "oscillation": bool(osc), "runaway_E": bool(runaway), "count": len(window)}
 
 
-# ---------------------------
+# ---------------------------------------------------------------------
 # ShadowRunner
-# ---------------------------
+# ---------------------------------------------------------------------
 
 class ShadowRunner:
     """
-    Clones the state, injects candidate policy, replays recent evidence, and computes reward & safety.
+    Clone state, inject candidate policy, replay evidence, return (reward, safety_flags).
     """
     def __init__(self,
                  reward_fn: Callable[[List[Dict[str, Any]]], float] = default_reward,
@@ -208,7 +218,6 @@ class ShadowRunner:
     def replay(self, state, spec: PolicySpec, evidence_seq: List[Any]) -> Tuple[float, Dict[str, Any]]:
         if not evidence_seq:
             return -1e9, {"reason": "empty_window"}
-        # Bound window length for cost
         seq = evidence_seq[-self.max_window:]
         if len(seq) < self.min_window:
             return -1e9, {"reason": "short_window", "n": len(seq)}
@@ -226,16 +235,14 @@ class ShadowRunner:
         return float(r), flags
 
 
-# ---------------------------
-# PolicyManager
-# ---------------------------
+# ---------------------------------------------------------------------
+# PolicyManager (ε-greedy + contextual top-k + bounded evolution)
+# ---------------------------------------------------------------------
 
 class PolicyManager:
     """
     ε-greedy + contextual top-k promotion with safety gating.
-    - epsilon: exploration rate
-    - promote_margin: require candidate_reward >= promote_margin * current_reward
-    - cooldown_steps: prevent thrashing; skip promotion if last promotion too recent
+    Optional param evolution: mutate best-in-bucket within bounds and promote if safe.
     """
     def __init__(self,
                  base_specs: List[PolicySpec],
@@ -246,70 +253,6 @@ class PolicyManager:
                  cooldown_steps: int = 30):
         if not base_specs:
             raise ValueError("PolicyManager requires at least one PolicySpec.")
-    def set_param_space(self, space: Dict[str, Dict[str, ParamRange]]) -> None:
-        self.param_space = ParamSpace(space)
-
-    def evolve_if_due(self, state, ctx: Dict[str, Any], recent_evidence: List[Any]) -> Optional[PolicySpec]:
-         step = int(ctx.get("t", len(state.history)))
-    if step % max(1, self.evolve_every) != 0:
-        return None
-
-    bucket = self.context_bucket(ctx)
-    # pick a base spec: top for bucket or any available
-    base_ids = self.memory.top_ids(bucket, k=1)
-    base_spec_id = base_ids[0] if base_ids else (next(iter(self.specs)) if self.specs else None)
-    if base_spec_id is None:
-        return None
-    base_spec = self.specs[base_spec_id]
-    bounds = self.param_space.bounds_for(base_spec.id)
-    if not bounds:
-        return None  # nothing tunable for this spec
-
-    # mutate within bounds
-    candidate_params = _mutate_params(base_spec.params, bounds, rate=self.evolve_rate)
-    cand = PolicySpec(
-        id=f"{base_spec.id}#mut@{step}",
-        threshold_fn=base_spec.threshold_fn,
-        realign_fn=base_spec.realign_fn,
-        collapse_fn=base_spec.collapse_fn,
-        params=candidate_params,
-        safety_level="experimental",
-        notes=f"mutated from {base_spec.id}"
-    )
-
-    # Temporarily apply params to state during shadow replay:
-    # We assume policies read state.k, state.Θ only indirectly; params here are metadata.
-    # If you want params to actually alter behavior, read them inside policy callables or map them to state before replay.
-    # Minimal approach: map common params onto state via a thin wrapper.
-    # Quick wrapper:
-    def _apply_params_to_state(st, p):
-        if "k" in p: st.k = float(p["k"])
-        if "Θ" in p: st.Θ = float(p["Θ"])
-
-    s = copy.deepcopy(state)
-    _apply_params_to_state(s, candidate_params)
-    cand_reward, cand_flags = self.shadow.replay(s, cand, recent_evidence)
-
-    s2 = copy.deepcopy(state)
-    _apply_params_to_state(s2, base_spec.params)
-    base_reward, _ = self.shadow.replay(s2, base_spec, recent_evidence)
-
-    unsafe = cand_flags.get("rupture_storm") or cand_flags.get("oscillation") or cand_flags.get("runaway_E")
-    if (cand_reward > self.evolve_margin * base_reward) and not unsafe:
-        # Register and promote
-        self.specs[cand.id] = cand
-        state.inject_policy(**cand.fns())
-        # Also map params onto live state
-        _apply_params_to_state(state, candidate_params)
-        self.memory.remember(bucket, cand, cand_reward)
-        self.last_promotion = {"id": cand.id, "bucket": bucket, "reward": float(cand_reward), "baseline_reward": float(base_reward), "flags": cand_flags, "step": step}
-        if hasattr(state, "_log_event"):
-            state._log_event("policy_evolved", self.last_promotion)
-        return cand
-    else:
-        # Remember trial baseline for learning, even if not promoted
-        self.memory.remember(bucket, base_spec, base_reward)
-        return None
         self.specs: Dict[str, PolicySpec] = {s.id: s for s in base_specs}
         self.memory = memory or PolicyMemory()
         self.shadow = shadow or ShadowRunner()
@@ -318,10 +261,17 @@ class PolicyManager:
         self.cooldown_steps = int(max(0, cooldown_steps))
         self._last_promotion_step: Optional[int] = None
         self.last_promotion: Optional[Dict[str, Any]] = None
+
+        # Evolution controls
         self.param_space: ParamSpace = ParamSpace()
         self.evolve_every: int = 30
         self.evolve_rate: float = 1.0
         self.evolve_margin: float = 1.02
+        self._rng = np.random.default_rng()
+
+    # --- param evolution configuration ---
+    def set_param_space(self, space: Dict[str, Dict[str, ParamRange]]) -> None:
+        self.param_space = ParamSpace(space)
 
     # ---- context bucketing ----
     @staticmethod
@@ -334,7 +284,7 @@ class PolicyManager:
     def context_bucket(self, ctx: Dict[str, Any]) -> str:
         """
         Map raw context into a coarse, stable bucket string.
-        Expected ctx keys (optional, defaults handled): E, mean_drift_20, rupt_rate_20, domain, step
+        Expected ctx keys (optional): E, mean_drift_20, rupt_rate_20, domain, t
         """
         E = float(ctx.get("E", 0.0))
         md = float(ctx.get("mean_drift_20", 0.0))
@@ -357,10 +307,9 @@ class PolicyManager:
         top_ids = self.memory.top_ids(bucket, k=k)
         if top_ids:
             return [self.specs[i] for i in top_ids if i in self.specs]
-        # fallback: all specs
         return list(self.specs.values())
 
-    # ---- main entry ----
+    # ---- main entry: selection/promotion ----
     def maybe_adjust(self, state, ctx: Dict[str, Any], recent_evidence: List[Any]) -> Optional[str]:
         """
         Evaluate candidates and promote the best safe policy if it beats current by margin.
@@ -388,11 +337,10 @@ class PolicyManager:
         current_spec = self._current_spec(state)
         current_r, current_flags = self.shadow.replay(state, current_spec, recent_evidence)
 
-        # Safety gating: never promote if candidate triggers storms/oscillation/runaway
+        # Safety gating
         unsafe = best_flags.get("rupture_storm") or best_flags.get("oscillation") or best_flags.get("runaway_E")
 
         if best_spec and (best_r > self.promote_margin * current_r) and not unsafe:
-            # Promote
             state.inject_policy(**best_spec.fns())
             self.memory.remember(bucket, best_spec, best_r)
             self.last_promotion = {
@@ -404,11 +352,84 @@ class PolicyManager:
                 "step": step,
             }
             self._last_promotion_step = step
-            # Let the state know for its event log (if available)
             if hasattr(state, "_log_event"):
                 state._log_event("policy_promoted", self.last_promotion)
             return best_spec.id
 
-        # Optionally remember baseline too (for analytics)
+        # Remember baseline too (analytics)
         self.memory.remember(bucket, current_spec, current_r)
+        return None
+
+    # ---- bounded evolution (optional) ----
+    def evolve_if_due(self, state, ctx: Dict[str, Any], recent_evidence: List[Any]) -> Optional[PolicySpec]:
+        """
+        If the cadence hits, mutate top policy in bucket within ParamSpace bounds and
+        promote if it safely outperforms baseline by evolve_margin.
+        """
+        if self.param_space.is_empty():
+            return None
+
+        step = int(ctx.get("t", len(state.history)))
+        if step % max(1, self.evolve_every) != 0:
+            return None
+
+        bucket = self.context_bucket(ctx)
+
+        # Choose a base spec: best in bucket or first available
+        base_ids = self.memory.top_ids(bucket, k=1)
+        base_spec_id = base_ids[0] if base_ids else (next(iter(self.specs)) if self.specs else None)
+        if base_spec_id is None:
+            return None
+
+        base_spec = self.specs[base_spec_id]
+        bounds = self.param_space.bounds_for(base_spec.id)
+        if not bounds:
+            return None
+
+        # Mutate parameters within bounds
+        candidate_params = _mutate_params(getattr(base_spec, "params", {}), bounds, rate=self.evolve_rate, rng=self._rng)
+        cand = PolicySpec(
+            id=f"{base_spec.id}#mut@{step}",
+            threshold_fn=base_spec.threshold_fn,
+            realign_fn=base_spec.realign_fn,
+            collapse_fn=base_spec.collapse_fn,
+            params=candidate_params,
+            notes=f"mutated from {base_spec.id}",
+        )
+
+        # Helper to temporarily map common params to state attributes
+        def _apply_params_to_state(st, p):
+            if "k" in p: st.k = float(p["k"])
+            if "Θ" in p: st.Θ = float(p["Θ"])
+
+        # Score candidate vs baseline, applying params to the cloned state
+        s = copy.deepcopy(state)
+        _apply_params_to_state(s, candidate_params)
+        cand_reward, cand_flags = self.shadow.replay(s, cand, recent_evidence)
+
+        s2 = copy.deepcopy(state)
+        _apply_params_to_state(s2, getattr(base_spec, "params", {}))
+        base_reward, _ = self.shadow.replay(s2, base_spec, recent_evidence)
+
+        unsafe = cand_flags.get("rupture_storm") or cand_flags.get("oscillation") or cand_flags.get("runaway_E")
+        if (cand_reward > self.evolve_margin * base_reward) and not unsafe:
+            # Register and promote
+            self.specs[cand.id] = cand
+            state.inject_policy(**cand.fns())
+            _apply_params_to_state(state, candidate_params)  # map onto live state
+            self.memory.remember(bucket, cand, cand_reward)
+            self.last_promotion = {
+                "id": cand.id,
+                "bucket": bucket,
+                "reward": float(cand_reward),
+                "baseline_reward": float(base_reward),
+                "flags": cand_flags,
+                "step": step,
+            }
+            if hasattr(state, "_log_event"):
+                state._log_event("policy_evolved", self.last_promotion)
+            return cand
+
+        # Track baseline even if candidate loses (learning signal)
+        self.memory.remember(bucket, base_spec, base_reward)
         return None
