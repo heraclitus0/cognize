@@ -181,7 +181,7 @@ class Perception:
         return (V / n).astype(float)
 
 # ---------------------------
-# Optional: Meta-policy manager (safe, template-bound)
+# Optional: Meta-policy manager
 # ---------------------------
 
 @dataclass
@@ -376,6 +376,53 @@ class EpistemicState:
           5) Update E (misalignment memory)
           6) Meta-policy manager (if present) may evaluate and promote periodically
         """
+   #0)#auto evolution enabling  
+   def enable_auto_evolution(self,
+                          param_space: Dict[str, Dict[str, Any]],
+                          every: int = 30,
+                          rate: float = 1.0,
+                          margin: float = 1.02) -> None:
+    """
+    Wire the state's PolicyManager for bounded runtime evolution.
+
+    param_space: {"policy_id": {"param": ParamRange or (low, high, sigma)}}
+                 (The concrete ParamRange class lives in meta_learning.py.)
+    every:       attempt evolution every N steps
+    rate:        mutation intensity multiplier
+    margin:      candidate must beat baseline by this factor to be promoted
+    """
+    if not self.policy_manager:
+        raise ValueError("Auto-evolution requires a PolicyManager on this state.")
+    # allow both ParamRange objects and tuples
+    if hasattr(self.policy_manager, "set_param_space"):
+        # normalize tuples into ParamRange if needed
+        try:
+            from .meta_learning import ParamRange  # type: ignore
+            norm_space: Dict[str, Dict[str, Any]] = {}
+            for pid, params in param_space.items():
+                norm_space[pid] = {}
+                for k, v in params.items():
+                    if isinstance(v, tuple) and len(v) in (2, 3):
+                        low, high, *rest = v
+                        sigma = rest[0] if rest else 0.05
+                        norm_space[pid][k] = ParamRange(float(low), float(high), float(sigma))
+                    else:
+                        norm_space[pid][k] = v
+        except Exception:
+            norm_space = param_space
+        self.policy_manager.set_param_space(norm_space)
+
+    # cadence & thresholds (only if manager exposes these knobs)
+    for attr, val in (("evolve_every", int(max(5, every))),
+                      ("evolve_rate", float(rate)),
+                      ("evolve_margin", float(max(1.0, margin)))):
+        if hasattr(self.policy_manager, attr):
+            setattr(self.policy_manager, attr, val)
+
+    self._log_event("auto_evolution_enabled", {
+        "every": int(every), "rate": float(rate), "margin": float(margin)
+    })
+
         # 1) Resolve R
         R_is_dict = isinstance(R, dict)
         R_vec: Optional[Vector] = None
@@ -489,6 +536,7 @@ class EpistemicState:
                 "∆": float(delta_mag),
                 "S̄": float(S_bar),
                 "Θ": float(threshold_val),
+                "E": float(self.E),
                 "ruptured": ruptured,
                 "symbol": self._last_symbol,
                 "source": source,
@@ -500,20 +548,44 @@ class EpistemicState:
             if len(self._rolling_ruptures) > 256: self._rolling_ruptures.pop(0)
             if len(self._rolling_drift) > 256: self._rolling_drift.pop(0)
 
-        # 6) Meta-policy manager tick (every N steps; requires recent window)
-        self._time += 1
-        if self.policy_manager and len(self.history) >= 12 and (self._time % 10 == 0):
-            recent_evidence = [h["R"] for h in self.history[-20:]]
-            ctx = {
-                "t": self._time,
-                "E": float(self.E),
-                "rupt_rate_20": float(np.mean(self._rolling_ruptures[-20:])) if len(self._rolling_ruptures) >= 1 else 0.0,
-                "mean_drift_20": float(np.mean(self._rolling_drift[-20:])) if len(self._rolling_drift) >= 1 else 0.0,
-            }
-            try:
-                self.policy_manager.maybe_adjust(self, ctx, recent_evidence)
-            except Exception as e:
-                self._log_event("policy_manager_error", {"error": str(e)})
+# 6) Meta-policy manager tick (every N steps; requires recent window)
+self._time += 1
+if self.policy_manager and len(self.history) >= 12 and (self._time % 10 == 0):
+    recent_evidence = [h["R"] for h in self.history[-20:]]
+    ctx = {
+        "t": self._time,
+        "E": float(self.E),
+        "rupt_rate_20": float(np.mean(self._rolling_ruptures[-20:])) if len(self._rolling_ruptures) >= 1 else 0.0,
+        "mean_drift_20": float(np.mean(self._rolling_drift[-20:])) if len(self._rolling_drift) >= 1 else 0.0,
+    }
+    try:
+        self.policy_manager.maybe_adjust(self, ctx, recent_evidence)
+    except Exception as e:
+        self._log_event("policy_manager_error", {"error": str(e)})
+
+    # try bounded evolution if the manager supports it (0.2.0 feature)
+    if hasattr(self.policy_manager, "evolve_if_due"):
+        try:
+            self.policy_manager.evolve_if_due(self, ctx, recent_evidence)
+        except Exception as e:
+            self._log_event("policy_evolve_error", {"error": str(e)})
+
+   def save_policy_memory(self, path: str) -> None:
+    if self.policy_manager and hasattr(self.policy_manager, "memory") and hasattr(self.policy_manager.memory, "save"):
+        try:
+            self.policy_manager.memory.save(path)  # type: ignore
+            self._log_event("policy_memory_saved", {"path": path})
+        except Exception as e:
+            self._log_event("policy_memory_save_error", {"error": str(e)})
+
+def load_policy_memory(self, path: str) -> None:
+    if self.policy_manager and hasattr(self.policy_manager, "memory") and hasattr(self.policy_manager.memory, "load"):
+        try:
+            self.policy_manager.memory.load(path)  # type: ignore
+            self._log_event("policy_memory_loaded", {"path": path})
+        except Exception as e:
+            self._log_event("policy_memory_load_error", {"error": str(e)})
+
 
     # -----------------------
     # Queries / tools
