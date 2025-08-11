@@ -1,37 +1,31 @@
 [project]
 name = "cognize"
-version = "0.1.5"
-description = "Symbolic cognition engine for epistemic drift, rupture detection, and realignment."
+version = "0.1.6"
+description = "Programmable cognition for systems."
 keywords = ["cognition", "epistemic", "rupture", "projection", "AI", "symbolic", "drift"]
-authors = [
-  { name = "Pulikanti Sashi Bharadwaj", email = "bharadwajpulikanti11@gmail.com" }
-]
+authors = [{ name = "Pulikanti Sashi Bharadwaj", email = "bharadwajpulikanti11@gmail.com" }]
 license = { text = "Apache-2.0" }
 readme = "README.md"
 requires-python = ">=3.8"
+dependencies = ["numpy>=1.20"]
 
-dependencies = [
-  "numpy",
-  "pandas",
-  "matplotlib",
-  "seaborn"
-]
+[project.optional-dependencies]
+viz = ["matplotlib", "seaborn", "pandas"]
+dev = ["pytest", "ruff", "mypy", "black", "build", "twine"]
 
-classifiers = [
-  "License :: OSI Approved :: Apache Software License",
-  "Programming Language :: Python :: 3",
-  "Operating System :: OS Independent",
-  "Development Status :: 3 - Alpha",
-  "Intended Audience :: Developers",
-  "Topic :: Scientific/Engineering :: Artificial Intelligence"
-]
+[build-system]
+requires = ["setuptools>=62", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["cognize*"]
 
 [project.urls]
 Homepage = "https://github.com/heraclitus0/cognize"
 Source = "https://github.com/heraclitus0/cognize"
 Issues = "https://github.com/heraclitus0/cognize/issues"
 UserGuide = "https://github.com/heraclitus0/cognize/blob/main/docs/USER_GUIDE.md"
-
-[build-system]
-requires = ["setuptools", "wheel"]
-build-backend = "setuptools.build_meta"
