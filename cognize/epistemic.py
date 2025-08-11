@@ -4,15 +4,22 @@
 EpistemicState — Continuity Theory aligned cognition kernel
 =====================================================================
 
-This module intentionally hosts the kernel + thin integration hooks so downstream
+This module hosts the cognition kernel + thin integration hooks so downstream
 modules (perception/network/meta/memory/safety/goals) can attach without heavy
 imports.
+
+Notation (ASCII aliases):
+- Θ  (THRESHOLD): rupture threshold                 -> threshold_*
+- ⊙  (CONTINUITY): realignment operator             -> realign_*
+- ∆  (DISTORTION): distortion magnitude             -> (delta / drift)
+- S̄  (DIVERGENCE): projected divergence            -> sbar_projection
+- E  (MISALIGNMENT): cumulative misalignment memory
 """
+
 from __future__ import annotations
 
 __author__ = "Pulikanti Sashi Bharadwaj"
 __license__ = "Apache-2.0"
-__version__ = "0.1.6"
 
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
@@ -23,7 +30,6 @@ import json
 import csv
 import uuid
 import math
-import copy
 import warnings
 import numpy as np
 
@@ -87,7 +93,6 @@ def _sanitize(v: Any) -> Any:
 # ---------------------------
 # Default policy primitives (safe templates)
 # ---------------------------
-
 # Threshold policies Θ(E, t, context)
 
 def threshold_static(state: "EpistemicState") -> float:
@@ -110,7 +115,11 @@ def threshold_combined(
     state: "EpistemicState", a: float = 0.05, sigma: float = 0.01, cap: float = 1.0
 ) -> float:
     """Adaptive + stochastic threshold model."""
-    return float(state.Θ + _clip(a * float(state.E), 0.0, cap) + float(state.rng.normal(0.0, _clip(sigma, 0.0, 0.2))))
+    return float(
+        state.Θ
+        + _clip(a * float(state.E), 0.0, cap)
+        + float(state.rng.normal(0.0, _clip(sigma, 0.0, 0.2)))
+    )
 
 
 # Realignment ⊙(V, ∆, E, k) → V'
@@ -264,7 +273,6 @@ class Perception:
 # Meta-policy scaffolding (safe-by-construction)
 # ---------------------------
 
-
 def _bind_known_kwargs(fn: Optional[Callable], param_dict: Optional[Dict[str, Any]]):
     """Return a partial(fn, **kw) for kwargs present in fn's signature."""
     if not callable(fn) or not param_dict:
@@ -413,7 +421,9 @@ class ShadowRunner:
         if len(seq) < self.min_window:
             return -1e9, {"reason": "short_window", "n": len(seq)}
 
-        s = copy.deepcopy(state)
+        # robust clone (avoid deepcopy RNG/callable pitfalls)
+        s = state._shadow_clone()  # type: ignore[attr-defined]
+
         # isolate from live PolicyManager
         pm_saved = getattr(s, "policy_manager", None)
         s.policy_manager = None
@@ -496,7 +506,6 @@ class PolicyManager:
         th = state._threshold_fn if state._threshold_fn else threshold_static
         rl = state._realign_fn if state._realign_fn else realign_linear
         cp = state._collapse_fn if state._collapse_fn else collapse_reset
-        # Reflect the current effective callables without params to avoid overriding
         return PolicySpec("__current__", th, rl, cp, params={})
 
     def _top_candidates(self, bucket: str, k: int = 3) -> List[PolicySpec]:
@@ -626,6 +635,7 @@ class PolicyManager:
         if not unsafe and r_cand > self.evolve_margin * r_curr:
             self.memory.remember(ctx, cand, r_cand)
             PolicyManager._apply_params_to_state(state, cand.params or {})
+            state.inject_policy(**cand.fns())  # ensure functions of the promoted candidate are active
             self.last_promotion = {"id": cand.id, "reward": r_cand, "mutated_from": base.id, "step": step}
             if hasattr(state, "_log_event"):
                 state._log_event("policy_mutation_promoted", self.last_promotion)
@@ -636,7 +646,6 @@ class PolicyManager:
 # ---------------------------
 # EpistemicState core
 # ---------------------------
-
 
 class EpistemicState:
     """
@@ -730,16 +739,17 @@ class EpistemicState:
 
         V_is_scalar = not isinstance(self.V, np.ndarray)
 
-        # Scalar→vector soft-start
+        # Scalar→vector soft-start (preserve magnitude; avoid direction flip)
         if R_vec is not None and V_is_scalar:
-            mag = float(self.V)
+            mag = abs(float(self.V))
             rv = np.asarray(R_vec, dtype=float)
             self.V = (rv / _l2_norm(rv)) * mag
             V_is_scalar = False
 
         # 2) Compute ∆ and scalar R_val for policy signatures
         if not V_is_scalar:
-            assert R_vec is not None, "Vector V requires vector R."
+            if R_vec is None:
+                raise ValueError("Vector V requires vector R.")
             V_vec = np.asarray(self.V, dtype=float)
             delta_vec = R_vec - V_vec
             delta_mag = float(np.linalg.norm(delta_vec))
@@ -763,16 +773,12 @@ class EpistemicState:
         self._last_symbol = "⚠" if ruptured else "⊙"
 
         if ruptured:
-            if callable(self._collapse_fn):
-                try:
-                    if self._collapse_fn is collapse_adopt_R and self._last_R_vec is not None:
-                        Vp, Ep = np.asarray(self._last_R_vec, dtype=float), 0.0
-                    else:
-                        Vp, Ep = self._collapse_fn(self, R_val)
-                except Exception as e:
-                    raise RuntimeError(f"Collapse function failed: {e}")
-            else:
-                Vp, Ep = collapse_reset(self, R_val)
+            # Always call the collapse policy; let it decide vector/scalar adoption.
+            cf = self._collapse_fn or collapse_reset
+            try:
+                Vp, Ep = cf(self, R_val)
+            except Exception as e:
+                raise RuntimeError(f"Collapse function failed: {e}")
 
             self.E = float(Ep)
             if isinstance(self.V, np.ndarray):
@@ -811,7 +817,8 @@ class EpistemicState:
                     self.V = float(realign_linear(self, R_val, delta_mag))
             else:
                 V_vec = np.asarray(self.V, dtype=float)
-                assert R_vec is not None
+                if R_vec is None:
+                    raise ValueError("Vector V requires vector R.")
                 step = float(self.k) * (R_vec - V_vec) * (1.0 + float(self.E))
                 norm_step = float(np.linalg.norm(step))
                 if norm_step > float(self.step_cap):
@@ -1152,6 +1159,33 @@ class EpistemicState:
             return float(np.linalg.norm(vec))
         else:
             raise ValueError("Reality must be float, list, ndarray, or dict (with Perception).")
+
+    def _shadow_clone(self) -> "EpistemicState":
+        """
+        Minimal, robust clone for shadow evaluation.
+        - No policy_manager or perception copied.
+        - Hooks (threshold/realign/collapse/divergence) are not copied; caller injects.
+        - Fresh RNG for isolation.
+        - Empty history.
+        """
+        clone = EpistemicState(
+            V0=(np.copy(self.V) if isinstance(self.V, np.ndarray) else float(self.V)),
+            E0=float(self.E),
+            threshold=float(self.Θ),
+            realign_strength=float(self.k),
+            decay_rate=float(self.decay_rate),
+            identity=None,
+            log_history=True,
+            rng_seed=None,
+            step_cap=float(self.step_cap),
+            epsilon=float(self.epsilon),
+            perception=None,
+            policy_manager=None,
+            divergence_fn=self._divergence_fn,
+            max_history=None,
+        )
+        clone.rng = np.random.default_rng()
+        return clone
 
 
 # ---------------------------
