@@ -1,11 +1,30 @@
 # Licensed under the Apache License, Version 2.0
 # -*- coding: utf-8 -*-
 """
-Cognize Meta-Learning (Runtime Policy Adaptation)
-=================================================
+cognize.meta_learning
+=====================
 
+Cognize Meta-Learning (Runtime Policy Adaptation)
+-------------------------------------------------
 Selects (and can evolve) epistemic policies at runtime via shadow evaluation.
-Safeguards: ε-greedy, safety flags, promotion margins, and bounded parameter evolution.
+Safeguards: ε-greedy, safety flags, promotion margins, cooldown, and bounded
+parameter evolution (no arbitrary code-gen).
+
+Public API
+----------
+- class PolicySpec        (reused from cognize.epistemic)
+- class ParamRange
+- class ParamSpace
+- class PolicyMemory
+- class ShadowRunner
+- class PolicyManager
+
+Notes
+-----
+- Baseline parity: baseline scoring uses EpistemicState's *kernel defaults*
+  (threshold_static, realign_linear, collapse_reset) when no custom policy is set.
+- Evolution: only numeric params in ParamSpace are mutated; common params (e.g. k, Θ)
+  are mapped onto the cloned/live state during evaluation/promotion.
 """
 
 from __future__ import annotations
@@ -17,8 +36,13 @@ import json
 import time
 import numpy as np
 
-# Reuses kernel's PolicySpec to avoid duplication.
-from .epistemic import PolicySpec
+# Reuse PolicySpec and kernel defaults for baseline parity
+from .epistemic import (
+    PolicySpec,
+    threshold_static as _TH0,
+    realign_linear as _RL0,
+    collapse_reset as _CP0,
+)
 
 
 # ---------------------------------------------------------------------
@@ -27,9 +51,13 @@ from .epistemic import PolicySpec
 
 @dataclass
 class ParamRange:
+    """
+    Defines an inclusive numeric range for a tunable parameter,
+    plus a relative mutation noise scale (sigma) as a fraction of the range.
+    """
     low: float
     high: float
-    sigma: float = 0.05  # relative mutation noise scale (fraction of range)
+    sigma: float = 0.05  # relative noise scale ∈ [0, 1]
 
     def clamp(self, x: float) -> float:
         return float(min(max(x, self.low), self.high))
@@ -38,10 +66,15 @@ class ParamRange:
 class ParamSpace:
     """
     Mapping: policy_id -> param_name -> ParamRange
-    Example:
-      {
-        "cautious": {"k": ParamRange(0.05, 0.4), "a": ParamRange(0.01, 0.2)}
-      }
+
+    Example
+    -------
+    ParamSpace({
+        "cautious": {
+            "k": ParamRange(0.05, 0.40, 0.08),
+            "a": ParamRange(0.01, 0.20, 0.05)
+        }
+    })
     """
     def __init__(self, space: Optional[Dict[str, Dict[str, ParamRange]]] = None):
         self._space: Dict[str, Dict[str, ParamRange]] = space or {}
@@ -55,6 +88,13 @@ class ParamSpace:
     def is_empty(self) -> bool:
         return not any(self._space.values())
 
+    def __bool__(self) -> bool:
+        return not self.is_empty()
+
+    def __repr__(self) -> str:
+        policies = ", ".join(self._space.keys()) or "∅"
+        return f"ParamSpace(policies=[{policies}])"
+
 
 def _mutate_params(params: Dict[str, Any],
                    bounds: Dict[str, ParamRange],
@@ -62,7 +102,23 @@ def _mutate_params(params: Dict[str, Any],
                    rng: Optional[np.random.Generator] = None) -> Dict[str, Any]:
     """
     Gaussian mutation within bounds for numeric params only.
-    Non-numeric params are copied through unchanged.
+    Non-numeric params are copied unchanged.
+
+    Parameters
+    ----------
+    params : Dict[str, Any]
+        Base parameters to mutate (often from PolicySpec.params).
+    bounds : Dict[str, ParamRange]
+        Allowed ranges per param.
+    rate : float
+        Global multiplier for noise strength.
+    rng : np.random.Generator
+        Optional RNG; default is np.random.default_rng().
+
+    Returns
+    -------
+    Dict[str, Any]
+        Mutated parameter dictionary.
     """
     rng = rng or np.random.default_rng()
     out: Dict[str, Any] = dict(params)
@@ -82,6 +138,15 @@ class PolicyMemory:
     """
     Rolling memory of (context bucket, policy id, params, reward).
     Provides top-k lookup; supports JSON persistence.
+
+    Records format:
+    {
+      "ctx_bucket": str,
+      "id": str,                  # policy id
+      "params": Dict[str, Any],   # sanitized
+      "reward": float,
+      "ts": float                 # epoch seconds
+    }
     """
     def __init__(self, cap: int = 5000):
         self.records: List[Dict[str, Any]] = []
@@ -117,7 +182,7 @@ class PolicyMemory:
             self.records = self.records[-self.cap:]
 
     def top_ids(self, ctx_bucket: str, k: int = 3) -> List[str]:
-        """Return top-k policy ids for this context bucket; fallback to global."""
+        """Return top-k policy ids for this context bucket; fallback to global ordering."""
         if not self.records:
             return []
         filt = [r for r in self.records if r["ctx_bucket"] == ctx_bucket]
@@ -152,6 +217,12 @@ class PolicyMemory:
         with open(path, "w", encoding="utf-8") as f:
             json.dump(self.records, f, indent=2, ensure_ascii=False)
 
+    def __len__(self) -> int:
+        return len(self.records)
+
+    def __repr__(self) -> str:
+        return f"PolicyMemory(records={len(self.records)}, cap={self.cap})"
+
 
 # ---------------------------------------------------------------------
 # Reward & Safety utilities
@@ -185,7 +256,7 @@ def safety_flags(window: List[Dict[str, Any]]) -> Dict[str, Any]:
     rupt_seq = _np.array([1 if w.get("ruptured", False) else 0 for w in window], dtype=int)
     storm = rupt_seq.mean() > 0.5
 
-    # Oscillation heuristic: many flips across window
+    # Oscillation heuristic: many flips across the window
     changes = _np.abs(_np.diff(rupt_seq)).sum()
     osc = changes >= max(4, len(rupt_seq) // 3)
 
@@ -271,6 +342,7 @@ class PolicyManager:
 
     # --- param evolution configuration ---
     def set_param_space(self, space: Dict[str, Dict[str, ParamRange]]) -> None:
+        """Set the evolvable parameter bounds (policy_id -> param -> ParamRange)."""
         self.param_space = ParamSpace(space)
 
     # ---- context bucketing ----
@@ -297,11 +369,12 @@ class PolicyManager:
 
     # ---- utilities ----
     def _current_spec(self, state) -> PolicySpec:
-        """Snapshot the state's current policy triple for comparison."""
-        th = state._threshold_fn if state._threshold_fn else (lambda s: state.Θ)
-        rl = state._realign_fn if state._realign_fn else (lambda s, R, d: state.V + state.k * d)
-        cp = state._collapse_fn if state._collapse_fn else (lambda s, R: (0.0, 0.0))
-        return PolicySpec("__current__", th, rl, cp, params={"k": getattr(state, "k", None), "Θ": getattr(state, "Θ", None)})
+        """Snapshot the state's current policy triple; fallback to kernel defaults."""
+        th = state._threshold_fn if getattr(state, "_threshold_fn", None) else _TH0
+        rl = state._realign_fn    if getattr(state, "_realign_fn", None)    else _RL0
+        cp = state._collapse_fn   if getattr(state, "_collapse_fn", None)   else _CP0
+        return PolicySpec("__current__", th, rl, cp, params={"k": getattr(state, "k", None),
+                                                             "Θ": getattr(state, "Θ", None)})
 
     def _top_candidates(self, bucket: str, k: int = 3) -> List[PolicySpec]:
         top_ids = self.memory.top_ids(bucket, k=k)
@@ -309,7 +382,7 @@ class PolicyManager:
             return [self.specs[i] for i in top_ids if i in self.specs]
         return list(self.specs.values())
 
-    # ---- main entry: selection/promotion ----
+    # ---- selection/promotion ----
     def maybe_adjust(self, state, ctx: Dict[str, Any], recent_evidence: List[Any]) -> Optional[str]:
         """
         Evaluate candidates and promote the best safe policy if it beats current by margin.
@@ -323,7 +396,6 @@ class PolicyManager:
         explore = (np.random.random() < self.epsilon) or (not self.memory.records)
         candidates = list(self.specs.values()) if explore else self._top_candidates(bucket, k=min(3, len(self.specs)))
 
-        # Evaluate candidates
         best_spec: Optional[PolicySpec] = None
         best_r: float = -1e12
         best_flags: Dict[str, Any] = {}
@@ -363,7 +435,7 @@ class PolicyManager:
     # ---- bounded evolution (optional) ----
     def evolve_if_due(self, state, ctx: Dict[str, Any], recent_evidence: List[Any]) -> Optional[PolicySpec]:
         """
-        If the cadence hits, mutate top policy in bucket within ParamSpace bounds and
+        If cadence hits, mutate top policy in bucket within ParamSpace bounds and
         promote if it safely outperforms baseline by evolve_margin.
         """
         if self.param_space.is_empty():
@@ -386,7 +458,7 @@ class PolicyManager:
         if not bounds:
             return None
 
-        # Mutate parameters within bounds
+        # Mutate parameters
         candidate_params = _mutate_params(getattr(base_spec, "params", {}), bounds, rate=self.evolve_rate, rng=self._rng)
         cand = PolicySpec(
             id=f"{base_spec.id}#mut@{step}",
@@ -397,12 +469,12 @@ class PolicyManager:
             notes=f"mutated from {base_spec.id}",
         )
 
-        # Helper to temporarily map common params to state attributes
+        # Helper: temporarily map common params to state attributes while scoring
         def _apply_params_to_state(st, p):
             if "k" in p: st.k = float(p["k"])
             if "Θ" in p: st.Θ = float(p["Θ"])
 
-        # Score candidate vs baseline, applying params to the cloned state
+        # Candidate vs baseline (both on cloned states)
         s = copy.deepcopy(state)
         _apply_params_to_state(s, candidate_params)
         cand_reward, cand_flags = self.shadow.replay(s, cand, recent_evidence)
@@ -430,6 +502,25 @@ class PolicyManager:
                 state._log_event("policy_evolved", self.last_promotion)
             return cand
 
-        # Track baseline even if candidate loses (learning signal)
+        # Track baseline even if candidate loses
         self.memory.remember(bucket, base_spec, base_reward)
         return None
+
+    # ---- convenience ----
+    def config(self) -> Dict[str, Any]:
+        """Return concise configuration useful for dashboards."""
+        return {
+            "num_specs": len(self.specs),
+            "epsilon": self.epsilon,
+            "promote_margin": self.promote_margin,
+            "cooldown_steps": self.cooldown_steps,
+            "evolution_enabled": not self.param_space.is_empty(),
+            "evolve_every": self.evolve_every,
+            "evolve_rate": self.evolve_rate,
+            "evolve_margin": self.evolve_margin,
+        }
+
+    def __repr__(self) -> str:
+        evo = "on" if not self.param_space.is_empty() else "off"
+        return (f"PolicyManager(specs={len(self.specs)}, eps={self.epsilon}, "
+                f"margin={self.promote_margin}, cooldown={self.cooldown_steps}, evo={evo})")
