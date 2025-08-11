@@ -1,15 +1,16 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/heraclitus0/cognize/main/assets/logo.png" width="180" alt="Cognize logo"/>
+  <img src="https://raw.githubusercontent.com/heraclitus0/cognize/main/assets/logo.png" width="180"/>
 </p>
 
 <h1 align="center">Cognize</h1>
 <p align="center"><em>Programmable cognition for Python systems</em></p>
 
 <p align="center">
-  <a href="https://pypi.org/project/cognize"><img src="https://img.shields.io/pypi/v/cognize?color=blue&label=PyPI" alt="PyPI version"></a>
-  <img src="https://img.shields.io/badge/python-3.8+-blue" alt="Python versions">
-  <img src="https://img.shields.io/badge/status-Alpha-orange" alt="Project status">
-  <img src="https://img.shields.io/badge/license-Apache%202.0-blue" alt="License">
+  <a href="https://pypi.org/project/cognize"><img src="https://img.shields.io/pypi/v/cognize?color=blue&label=version" alt="PyPI version"></a>
+  <img src="https://img.shields.io/badge/python-3.8+-blue">
+  <img src="https://img.shields.io/badge/status-beta-orange">
+  <img src="https://img.shields.io/badge/license-Apache%202.0-blue">
+  <a href="https://pepy.tech/project/cognize"><img src="https://static.pepy.tech/badge/cognize" alt="Downloads"></a>
 </p>
 
 ---
