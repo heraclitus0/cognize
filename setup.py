@@ -1,14 +1,14 @@
+from pathlib import Path
 from setuptools import setup, find_packages
 
-with open("README.md", encoding="utf-8") as f:
-    long_description = f.read()
+README = Path("README.md").read_text(encoding="utf-8")
 
 setup(
     name="cognize",
-    version="0.1.5",
+    version="0.1.6",  # keep in sync with pyproject/__init__
     author="Pulikanti Sashi Bharadwaj",
-    description="Symbolic cognition engine for epistemic drift, rupture detection, and realignment.",
-    long_description=long_description,
+    description="Programmable cognition for systems.",
+    long_description=README,
     long_description_content_type="text/markdown",
     url="https://github.com/heraclitus0/cognize",
     project_urls={
@@ -20,6 +20,7 @@ setup(
     classifiers=[
         "License :: OSI Approved :: Apache Software License",
         "Programming Language :: Python :: 3",
+        "Programming Language :: Python :: 3 :: Only",
         "Operating System :: OS Independent",
         "Development Status :: 3 - Alpha",
         "Intended Audience :: Developers",
@@ -27,11 +28,11 @@ setup(
     ],
     packages=find_packages(include=["cognize", "cognize.*"]),
     include_package_data=True,
+    python_requires=">=3.8",
     install_requires=[
         "numpy>=1.21",
-        "pandas>=1.3",
-        "matplotlib>=3.4",
-        "seaborn"
     ],
-    python_requires=">=3.8",
+    extras_require={
+        "viz": ["pandas>=2.0", "matplotlib>=3.6", "seaborn>=0.12"],
+    },
 )
