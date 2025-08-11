@@ -265,7 +265,7 @@ class PolicyMemory:
             {
                 "ctx": {k: _sanitize(v) for k, v in ctx.items()},
                 "id": spec.id,
-                "params": {k: _sanitize(v) for k, v in (spec.params or {}).items() |},
+                "params": {k: _sanitize(v) for k, v in (spec.params or {}).items() },
                 "reward": float(reward),
                 "ts": _now_iso(),
             }
