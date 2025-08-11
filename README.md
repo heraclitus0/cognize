@@ -39,8 +39,6 @@ Built for agents, simulations, filters, anomaly detection, and drift‑aware pip
 
 ```bash
 pip install cognize
-# optional plotting helpers
-pip install "cognize[viz]"
 ```
 
 ---
