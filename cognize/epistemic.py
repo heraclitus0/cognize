@@ -265,7 +265,7 @@ class PolicyMemory:
             {
                 "ctx": {k: _sanitize(v) for k, v in ctx.items()},
                 "id": spec.id,
-                "params": {k: _sanitize(v) for k, v in (spec.params or {}).items() },
+                "params": {k: _sanitize(v) for k, v in (spec.params or {}).items()},
                 "reward": float(reward),
                 "ts": _now_iso(),
             }
@@ -273,10 +273,18 @@ class PolicyMemory:
         if len(self.records) > self.cap:
             self.records = self.records[-self.cap :]
 
-    def top_ids(self, k: int = 3) -> List[str]:
+    def top_ids(self, k: int = 3, bucket: Optional[str] = None) -> List[str]:
+        """Return top-k policy ids; if bucket provided, filter by ctx['bucket']."""
         if not self.records:
             return []
-        ordered = sorted(self.records, key=lambda r: r["reward"], reverse=True)
+        pool = (
+            [r for r in self.records if isinstance(r.get("ctx"), dict) and r["ctx"].get("bucket") == bucket]
+            if bucket is not None
+            else self.records
+        )
+        if not pool:
+            pool = self.records
+        ordered = sorted(pool, key=lambda r: r["reward"], reverse=True)
         seen, out = set(), []
         for r in ordered:
             pid = r["id"]
@@ -457,10 +465,11 @@ class PolicyManager:
         th = state._threshold_fn if state._threshold_fn else threshold_static
         rl = state._realign_fn if state._realign_fn else realign_linear
         cp = state._collapse_fn if state._collapse_fn else collapse_reset
-        return PolicySpec("__current__", th, rl, cp, params={})
+        # include baseline param snapshot for parity in memory logs
+        return PolicySpec("__current__", th, rl, cp, params={"k": float(state.k), "Θ": float(state.Θ)})
 
     def _top_candidates(self, bucket: str, k: int = 3) -> List[PolicySpec]:
-        top_ids = self.memory.top_ids(k=k)
+        top_ids = self.memory.top_ids(k=k, bucket=bucket)
         if top_ids:
             return [self.specs[i] for i in top_ids if i in self.specs]
         return list(self.specs.values())
@@ -503,7 +512,8 @@ class PolicyManager:
         if best_spec and (best_r > self.promote_margin * current_r) and not unsafe:
             state.inject_policy(**best_spec.fns())
             self._apply_params_to_state(state, best_spec.params or {})
-            self.memory.remember(ctx, best_spec, best_r)
+            ctx_rec = dict(ctx); ctx_rec["bucket"] = bucket
+            self.memory.remember(ctx_rec, best_spec, best_r)
             self.last_promotion = {
                 "id": best_spec.id,
                 "bucket": bucket,
@@ -517,7 +527,9 @@ class PolicyManager:
                 state._log_event("policy_promoted", self.last_promotion)
             return best_spec.id
 
-        self.memory.remember(ctx, current_spec, current_r)
+        # remember baseline too (with bucket for analytics)
+        ctx_rec = dict(ctx); ctx_rec["bucket"] = bucket
+        self.memory.remember(ctx_rec, current_spec, current_r)
         return None
 
     class ParamRange:
@@ -584,10 +596,12 @@ class PolicyManager:
 
         unsafe = bool(flags_cand.get("rupture_storm") or flags_cand.get("oscillation") or flags_cand.get("runaway_E"))
         if not unsafe and r_cand > self.evolve_margin * r_curr:
-            self.memory.remember(ctx, cand, r_cand)
+            bucket = self.context_bucket(ctx)
+            ctx_rec = dict(ctx); ctx_rec["bucket"] = bucket
+            self.memory.remember(ctx_rec, cand, r_cand)
             PolicyManager._apply_params_to_state(state, cand.params or {})
             state.inject_policy(**cand.fns())  # ensure functions of the promoted candidate are active
-            self.last_promotion = {"id": cand.id, "reward": r_cand, "mutated_from": base.id, "step": step}
+            self.last_promotion = {"id": cand.id, "reward": r_cand, "mutated_from": base.id, "step": step, "bucket": bucket}
             if hasattr(state, "_log_event"):
                 state._log_event("policy_mutation_promoted", self.last_promotion)
             return cand.id
@@ -840,76 +854,76 @@ class EpistemicState:
     # -----------------------
 
     def enable_auto_evolution(
-    self,
-    param_space: Dict[str, Dict[str, Any]],
-    every: int = 30,
-    rate: float = 1.0,
-    margin: float = 1.02,
-) -> None:
-    """
-    Configure bounded parameter evolution on the attached policy_manager.
+        self,
+        param_space: Dict[str, Dict[str, Any]],
+        every: int = 30,
+        rate: float = 1.0,
+        margin: float = 1.02,
+    ) -> None:
+        """
+        Configure bounded parameter evolution on the attached policy_manager.
 
-    Compatible with:
-      - Built-in PolicyManager (has .ParamRange)
-      - Meta-learning PolicyManager (expects ParamRange-like objects with .low/.high/.sigma and .clamp())
-    """
-    if not self.policy_manager or not hasattr(self.policy_manager, "set_param_space"):
-        raise ValueError("Auto-evolution requires a PolicyManager with set_param_space().")
+        Compatible with:
+          - Built-in PolicyManager (has .ParamRange)
+          - Meta-learning PolicyManager (expects ParamRange-like objects with .low/.high/.sigma and .clamp())
+        """
+        if not self.policy_manager or not hasattr(self.policy_manager, "set_param_space"):
+            raise ValueError("Auto-evolution requires a PolicyManager with set_param_space().")
 
-    pm = self.policy_manager
+        pm = self.policy_manager
 
-    # 1) Choose a ParamRange constructor: manager's own if present, else a local shim.
-    PR = getattr(pm, "ParamRange", None)
+        # 1) Choose a ParamRange constructor: manager's own if present, else a local shim.
+        PR = getattr(pm, "ParamRange", None)
 
-    class _ShimParamRange:
-        __slots__ = ("low", "high", "sigma")
-        def __init__(self, low: float, high: float, sigma: float = 0.05):
-            self.low = float(low); self.high = float(high); self.sigma = float(max(0.0, sigma))
-        def clamp(self, x: float) -> float:
-            return float(min(max(float(x), self.low), self.high))
+        class _ShimParamRange:
+            __slots__ = ("low", "high", "sigma")
+            def __init__(self, low: float, high: float, sigma: float = 0.05):
+                self.low = float(low); self.high = float(high); self.sigma = float(max(0.0, sigma))
+            def clamp(self, x: float) -> float:
+                return float(min(max(float(x), self.low), self.high))
 
-    def _make_pr(low: float, high: float, sigma: float) -> Any:
-        ctor = PR if callable(PR) else _ShimParamRange
-        return ctor(float(low), float(high), float(sigma))
+        def _make_pr(low: float, high: float, sigma: float) -> Any:
+            ctor = PR if callable(PR) else _ShimParamRange
+            return ctor(float(low), float(high), float(sigma))
 
-    def _is_paramrange_like(x: Any) -> bool:
-        return all(hasattr(x, a) for a in ("low", "high", "sigma")) and callable(getattr(x, "clamp", None))
+        def _is_paramrange_like(x: Any) -> bool:
+            return all(hasattr(x, a) for a in ("low", "high", "sigma")) and callable(getattr(x, "clamp", None))
 
-    # 2) Normalize incoming param_space
-    normalized: Dict[str, Dict[str, Any]] = {}
-    for pid, params in (param_space or {}).items():
-        normalized[pid] = {}
-        for k, v in (params or {}).items():
-            if isinstance(v, tuple) and (2 <= len(v) <= 3):
-                low, high, *rest = v
-                sigma = rest[0] if rest else 0.05
-                normalized[pid][k] = _make_pr(low, high, sigma)
-            elif _is_paramrange_like(v):
-                normalized[pid][k] = v
-            else:
-                normalized[pid][k] = v  # constant / categorical, advisory
+        # 2) Normalize incoming param_space
+        normalized: Dict[str, Dict[str, Any]] = {}
+        for pid, params in (param_space or {}).items():
+            normalized[pid] = {}
+            for k, v in (params or {}).items():
+                if isinstance(v, tuple) and (2 <= len(v) <= 3):
+                    low, high, *rest = v
+                    sigma = rest[0] if rest else 0.05
+                    normalized[pid][k] = _make_pr(low, high, sigma)
+                elif _is_paramrange_like(v):
+                    normalized[pid][k] = v
+                else:
+                    normalized[pid][k] = v  # constant / categorical, advisory
 
-    # 3) Ship space into the manager
-    try:
-        pm.set_param_space(normalized)  # type: ignore
-    except Exception as e:
-        self._log_event("auto_evolution_paramspace_error", {"error": str(e)})
-        pm.set_param_space(param_space)  # type: ignore
+        # 3) Ship space into the manager
+        try:
+            pm.set_param_space(normalized)  # type: ignore
+        except Exception as e:
+            self._log_event("auto_evolution_paramspace_error", {"error": str(e)})
+            pm.set_param_space(param_space)  # type: ignore
 
-    # 4) Apply cadence & margins if the manager supports them
-    for attr, val in (
-        ("evolve_every", int(max(5, every))),
-        ("evolve_rate", float(rate)),
-        ("evolve_margin", float(max(1.0, margin))),
-    ):
-        if hasattr(pm, attr):
-            setattr(pm, attr, val)
+        # 4) Apply cadence & margins if the manager supports them
+        for attr, val in (
+            ("evolve_every", int(max(5, every))),
+            ("evolve_rate", float(rate)),
+            ("evolve_margin", float(max(1.0, margin))),
+        ):
+            if hasattr(pm, attr):
+                setattr(pm, attr, val)
 
-    self._log_event("auto_evolution_enabled", {
-        "every": int(every), "rate": float(rate), "margin": float(margin),
-        "manager": type(pm).__name__,
-        "range_ctor": ("manager.ParamRange" if callable(PR) else "shim"),
-    })
+        self._log_event("auto_evolution_enabled", {
+            "every": int(every), "rate": float(rate), "margin": float(margin),
+            "manager": type(pm).__name__,
+            "range_ctor": ("manager.ParamRange" if callable(PR) else "shim"),
+        })
 
     # -----------------------
     # Persistence helpers for policy memory
@@ -1152,7 +1166,8 @@ class EpistemicState:
         """
         Minimal, robust clone for shadow evaluation.
         - No policy_manager or perception copied.
-        - Hooks (threshold/realign/collapse/divergence) are not copied; caller injects.
+        - threshold/realign/collapse hooks are NOT copied (caller injects).
+        - divergence_fn IS preserved.
         - Fresh RNG for isolation.
         - Empty history.
         """
