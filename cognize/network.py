@@ -7,23 +7,21 @@ cognize.network
 EpistemicGraph — orchestrates multiple EpistemicState nodes as a directed,
 influence-aware graph.
 
-Why this version
-----------------
+Highlights
+----------
 - Deep telemetry: every applied edge influence is logged on the destination node
   (`event_log`), plus per-edge counters for diagnostics and dashboards.
 - Determinism hooks: optional RNG to coordinate any stochastic decisions, aligned
   with the seeded RNG style used in `EpistemicState` / `PolicyManager`.
 - Safer vector nudging: prefers a node's own current direction before falling
   back to source direction and, only last, a ones vector.
-- Bounded & reversible policy nudges: transient stabilization via Θ↑ and k↓,
-  logged and capped; no permanent policy mutation here (aligns with meta_learning).
-- Utilities that align with the rest of the codebase: adjacency export/import,
-  cascade traces, graph-level stats, and a propagation suspend context.
-- Graph-level hooks, validation, replay/simulation helpers, and edge pruning
-  for production operations.
+- Bounded & reversible policy nudges: transient stabilization via Θ↑ and k↓ with
+  **decaying bias**, logged and capped; no permanent policy mutation.
+- Utilities: adjacency export/import, cascade traces, graph-level stats, suspend
+  context, validation, replay, edge pruning.
 
-Public API (compatible + extras)
---------------------------------
+Public API
+----------
 - class EpistemicGraph
   - add(name, state=None, **kwargs)
   - link(src, dst, weight=0.5, mode="pressure", decay=0.85, cooldown=5)
@@ -45,13 +43,6 @@ Public API (compatible + extras)
   - replay(sequence_of_evidence_dicts)
   - predict_influence(src, dst, post=None, rupture=None, depth=1)
   - register_hook(event, fn)   # events: on_influence, on_link, on_unlink
-
-Notes
------
-- Modes: "pressure" propagates rupture pressure; "delta" gives weak coupling
-  without rupture; "policy" gently biases Θ and k under stress.
-- Works with scalar or vector V. Steps are bounded by min(graph.max_step,
-  node.step_cap) and damped by an oscillation guard.
 """
 
 from __future__ import annotations
@@ -69,38 +60,16 @@ from .epistemic import EpistemicState
 
 @dataclass
 class Edge:
-    """Directed influence from src -> dst.
-
-    Attributes
-    ----------
-    weight : float
-        Base multiplier on influence.
-    mode : str
-        "pressure" | "delta" | "policy".
-    decay : float
-        Per-hop attenuation when cascading.
-    cooldown : int
-        Minimum destination steps between consecutive influences on this edge.
-    last_influence_t : int
-        Destination node's last step index when this edge fired.
-    hits : int
-        Number of times this edge applied a non-zero influence.
-    applied_sum : float
-        Sum of applied magnitudes (for coarse heatmaps).
-    applied_ema : float
-        Exponential moving average of |applied| (smooth heatmap / alerting).
-    ema_alpha : float
-        EMA smoothing factor in (0,1].
-    """
+    """Directed influence from src -> dst."""
     weight: float = 0.5
-    mode: str = "pressure"
-    decay: float = 0.85
-    cooldown: int = 5
+    mode: str = "pressure"       # "pressure" | "delta" | "policy"
+    decay: float = 0.85          # per-hop attenuation
+    cooldown: int = 5            # min dst steps between firings
     last_influence_t: int = -999_999
     hits: int = 0
     applied_sum: float = 0.0
     applied_ema: float = 0.0
-    ema_alpha: float = 0.2
+    ema_alpha: float = 0.2       # EMA smoothing
 
     def as_dict(self) -> Dict[str, Any]:
         return {
@@ -123,25 +92,8 @@ class Edge:
 class EpistemicGraph:
     """
     Orchestrates multiple `EpistemicState` nodes with directional influence links.
-
-    Parameters
-    ----------
-    damping : float
-        Global damping multiplier on all propagated influences. Default 0.5.
-    max_depth : int
-        Maximum cascade depth when propagating influence. Default 3.
-    max_step : float
-        Global cap on a single propagated nudge magnitude. Default 1.0.
-    rupture_only_propagation : bool
-        If True, only propagate from a node when it ruptures, except that
-        "delta" edges still couple (weakly) without rupture. Default True.
-    rng : np.random.Generator | None
-        Optional RNG to align with seeded determinism across the system.
-    cascade_trace_cap : int
-        Keep the last N influence records for quick debugging (default 512).
     """
 
-    # ---- construction ----
     def __init__(
         self,
         damping: float = 0.5,
@@ -159,11 +111,11 @@ class EpistemicGraph:
         self.rupture_only = bool(rupture_only_propagation)
         self.graph_rng: np.random.Generator = rng or np.random.default_rng()
 
-        # Lightweight in-memory trace of last influences for UIs / debugging
+        # Rolling trace for debugging / UIs
         self._cascade_trace: List[Dict[str, Any]] = []
         self._cascade_trace_cap = int(max(0, cascade_trace_cap))
 
-        # Global switch to silence propagation (e.g., during batch updates)
+        # Global switch to silence propagation
         self._suspended: bool = False
 
         # Graph-level hooks: event -> list[Callable[[dict], None]]
@@ -171,33 +123,28 @@ class EpistemicGraph:
 
         # Graph event log (lightweight)
         self.event_log: List[Dict[str, Any]] = []
-        self._t: int = 0  # coarse graph time (increments on each step())
+        self._t: int = 0  # coarse graph time
+
+        # Per-node transient policy bias (reversible)
+        # name -> {"theta_base": float, "k_base": float, "dtheta": float, "dk": float}
+        self._policy_bias: Dict[str, Dict[str, float]] = {}
+        self._policy_bias_decay: float = 0.9  # decay each step for that node
 
     # ---- node & edge management ----
 
     def add(self, name: str, state: Optional[EpistemicState] = None, **kwargs) -> None:
-        """Add a node.
-
-        Parameters
-        ----------
-        name : str
-            Node name (must be unique).
-        state : EpistemicState, optional
-            An existing state to insert. If None, a new one is constructed from kwargs.
-        **kwargs :
-            Passed to `EpistemicState(**kwargs)` when `state` is None.
-        """
+        """Add a node (construct EpistemicState(**kwargs) if state is None)."""
         if name in self.nodes:
             raise KeyError(f"Node '{name}' already exists")
         if state is None:
             state = EpistemicState(**kwargs)
         self.nodes[name] = state
         self.edges.setdefault(name, {})
-        # Telemetry on the node itself
         try:
             state._log_event("graph_node_added", {"node": name})
         except Exception:
             pass
+        # Reuse on_link channel for node-added telemetry
         self._emit("on_link", {"event": "node_added", "node": name})
 
     def link(
@@ -209,35 +156,36 @@ class EpistemicGraph:
         decay: float = 0.85,
         cooldown: int = 5,
     ) -> None:
-        """Create/overwrite a directed link `src -> dst`.
-
-        mode ∈ {"pressure", "delta", "policy"}
-        """
+        """Create/overwrite a directed link `src -> dst`."""
         if src not in self.nodes or dst not in self.nodes:
             raise KeyError("Both src and dst must exist in graph.")
         if mode not in ("pressure", "delta", "policy"):
             raise ValueError("mode must be one of: 'pressure', 'delta', 'policy'")
         self.edges[src][dst] = Edge(
-            weight=float(weight), mode=mode, decay=float(decay), cooldown=int(cooldown)
+            weight=float(abs(weight)),  # enforce non-negative
+            mode=mode,
+            decay=float(decay),
+            cooldown=int(cooldown),
         )
-        # Telemetry on both endpoints
         try:
-            self.nodes[src]._log_event("graph_edge_linked", {"src": src, "dst": dst, "mode": mode, "weight": float(weight), "decay": float(decay), "cooldown": int(cooldown)})
-            self.nodes[dst]._log_event("graph_edge_linked", {"src": src, "dst": dst, "mode": mode, "weight": float(weight), "decay": float(decay), "cooldown": int(cooldown)})
+            meta = {"src": src, "dst": dst, "mode": mode, "weight": float(abs(weight)), "decay": float(decay), "cooldown": int(cooldown)}
+            self.nodes[src]._log_event("graph_edge_linked", meta)
+            self.nodes[dst]._log_event("graph_edge_linked", meta)
         except Exception:
             pass
         self._emit("on_link", {"event": "edge_linked", "src": src, "dst": dst, "mode": mode})
 
     def update_link(self, src: str, dst: str, **updates: Any) -> None:
-        """Update parameters of an existing link in-place (weight/decay/cooldown/mode)."""
+        """Update parameters of an existing link (weight/decay/cooldown/mode)."""
         e = self.edges.get(src, {}).get(dst)
         if not e:
             raise KeyError(f"No edge {src}->{dst}")
         for k in ("weight", "decay", "cooldown", "mode"):
             if k in updates:
-                setattr(e, k, updates[k] if k != "mode" else str(updates[k]))
+                setattr(e, k, float(abs(updates[k])) if k == "weight" else (str(updates[k]) if k == "mode" else updates[k]))
         try:
-            self.nodes[dst]._log_event("graph_edge_updated", {"src": src, "dst": dst, **{k: updates[k] for k in updates if k in {"weight", "decay", "cooldown", "mode"}}})
+            meta = {"src": src, "dst": dst, **{k: updates[k] for k in updates if k in {"weight", "decay", "cooldown", "mode"}}}
+            self.nodes[dst]._log_event("graph_edge_updated", meta)
         except Exception:
             pass
         self._emit("on_link", {"event": "edge_updated", "src": src, "dst": dst, **updates})
@@ -259,15 +207,15 @@ class EpistemicGraph:
     # ---- stepping ----
 
     def step(self, name: str, R: Any) -> Dict[str, Any]:
-        """Feed evidence to a node and (optionally) propagate influence.
-
-        Returns the node's last log entry (convenience for dashboards).
-        """
+        """Feed evidence to a node and (optionally) propagate influence."""
         if name not in self.nodes:
             raise KeyError(f"Unknown node '{name}'")
         n = self.nodes[name]
 
         pre_ruptured = bool(n.last().get("ruptured")) if n.last() else False
+
+        # Decay & apply any pending reversible policy bias before processing
+        self._decay_and_apply_policy_bias(name)
 
         n.receive(R, source=name)
         post = n.last() or {}
@@ -290,13 +238,8 @@ class EpistemicGraph:
         return post
 
     def step_all(self, evidence: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
-        """Batch step: process `{node_name: R}` for each item in `evidence`.
-        Nodes without evidence are skipped.
-        """
-        out: Dict[str, Dict[str, Any]] = {}
-        for name, R in evidence.items():
-            out[name] = self.step(name, R)
-        return out
+        """Batch step: process `{node_name: R}` for each item in `evidence`."""
+        return {name: self.step(name, R) for name, R in evidence.items()}
 
     def broadcast(self, R: Any, nodes: Optional[Iterable[str]] = None) -> Dict[str, Dict[str, Any]]:
         """Feed the same evidence to many nodes (e.g., common shocks)."""
@@ -323,7 +266,7 @@ class EpistemicGraph:
         for dst, e in self.neighbors(src).items():
             dst_state = self.nodes[dst]
 
-            # Edge cooldown check (relative to destination node's own step counter)
+            # Edge cooldown (relative to destination node's step counter)
             if (dst_state.summary()["t"] - e.last_influence_t) < e.cooldown:
                 continue
 
@@ -340,9 +283,7 @@ class EpistemicGraph:
             if base <= 0.0:
                 continue
 
-            magnitude = float(
-                self.damping * e.weight * base * (e.decay ** (depth - 1))
-            )
+            magnitude = float(self.damping * e.weight * base * (e.decay ** (depth - 1)))
 
             # Cap by both graph-level and node-local caps
             node_cap = float(getattr(dst_state, "step_cap", self.max_step))
@@ -357,7 +298,7 @@ class EpistemicGraph:
             if e.mode in ("pressure", "delta"):
                 applied = self._nudge_value_toward_recent_R(dst_state, magnitude, src_post=post)
             elif e.mode == "policy" and magnitude > 0.0:
-                applied = self._nudge_policy(dst_state, magnitude)
+                applied = self._nudge_policy(dst, magnitude)
 
             if applied != 0.0:
                 e.hits += 1
@@ -412,9 +353,7 @@ class EpistemicGraph:
         magnitude: float,
         src_post: Dict[str, Any],
     ) -> float:
-        """Move `dst_state.V` a little toward its own last `R` (preferred) or toward
-        the source node’s `R` direction as a fallback. Works for scalars and vectors.
-        Returns the L2 norm of the applied step (for logging)."""
+        """Move dst_state.V slightly toward its own last R (preferred) or source R direction."""
         dst_R_vec = self._last_R_scalar_or_vec(dst_state)
 
         if isinstance(dst_state.V, np.ndarray):
@@ -424,7 +363,6 @@ class EpistemicGraph:
             if dst_R_vec is not None:
                 direction = dst_R_vec / (np.linalg.norm(dst_R_vec) or 1.0)
             else:
-                # Prefer self-direction if available; last resort: source R direction; then ones
                 direction: Optional[np.ndarray]
                 direction = (v / (n_v or 1.0)) if n_v > 0 else None
                 if direction is None:
@@ -437,7 +375,6 @@ class EpistemicGraph:
 
             step = direction * float(magnitude)
 
-            # Respect destination node’s cap as well
             node_cap = float(getattr(dst_state, "step_cap", self.max_step))
             cap = float(min(self.max_step, max(1e-6, node_cap)))
             step_norm = float(np.linalg.norm(step))
@@ -451,7 +388,7 @@ class EpistemicGraph:
         else:
             # Scalar destination
             if dst_R_vec is not None:
-                target = float(dst_R_vec.mean())
+                target = float(np.linalg.norm(dst_R_vec))
             else:
                 src_R = src_post.get("R")
                 try:
@@ -468,26 +405,55 @@ class EpistemicGraph:
             dst_state.V = float(dst_state.V) + step
             return abs(step)
 
-    @staticmethod
-    def _nudge_policy(dst_state: EpistemicState, magnitude: float) -> float:
-        """Light-touch runtime bias: slightly increase Θ and reduce k under stress.
-        Reversible; meant for transient stabilization, not persistent mutation.
-        Returns the scalar 'policy adjustment magnitude' applied (for logging)."""
+    def _nudge_policy(self, name: str, magnitude: float) -> float:
+        """Apply a reversible, decaying bias to Θ (up) and k (down) for node `name`."""
+        st = self.nodes[name]
         try:
-            dθ = float(np.clip(0.05 * magnitude, -0.2, 0.2))
-            dk = float(np.clip(0.03 * magnitude, 0.0, 0.2))
-            dst_state.Θ = max(1e-6, float(dst_state.Θ) + dθ)
-            dst_state.k = max(1e-3, float(dst_state.k) - dk)
-            return abs(dθ) + abs(dk)
+            dθ_inc = float(np.clip(0.05 * magnitude, -0.2, 0.2))
+            dk_inc = float(np.clip(0.03 * magnitude, 0.0, 0.2))
+            bias = self._policy_bias.get(name)
+            if bias is None:
+                bias = {
+                    "theta_base": float(st.Θ),
+                    "k_base": float(st.k),
+                    "dtheta": 0.0,
+                    "dk": 0.0,
+                }
+                self._policy_bias[name] = bias
+            # accumulate with hard caps to avoid runaway
+            bias["dtheta"] = float(np.clip(bias["dtheta"] + dθ_inc, -0.5, 0.5))
+            bias["dk"]     = float(np.clip(bias["dk"] + dk_inc,  0.0, 0.5))
+            # apply immediately
+            st.Θ = max(1e-6, bias["theta_base"] + bias["dtheta"])
+            st.k = max(1e-3, bias["k_base"] - bias["dk"])
+            return abs(dθ_inc) + abs(dk_inc)
         except Exception:
-            return 0.0  # keep network resilient to odd node states
+            return 0.0  # keep network resilient
+
+    def _decay_and_apply_policy_bias(self, name: str) -> None:
+        """Decay pending policy bias for node and re-apply; restore when negligible."""
+        bias = self._policy_bias.get(name)
+        if not bias:
+            return
+        st = self.nodes[name]
+        # decay
+        bias["dtheta"] *= self._policy_bias_decay
+        bias["dk"]     *= self._policy_bias_decay
+        # if nearly zero, restore baseline and drop entry
+        if abs(bias["dtheta"]) < 1e-6 and abs(bias["dk"]) < 1e-6:
+            st.Θ = float(bias["theta_base"])
+            st.k = float(bias["k_base"])
+            self._policy_bias.pop(name, None)
+            return
+        # else apply decayed values
+        st.Θ = max(1e-6, bias["theta_base"] + bias["dtheta"])
+        st.k = max(1e-3, bias["k_base"] - bias["dk"])
 
     # ---- diagnostics ----
 
     @staticmethod
     def _oscillation_factor(state: EpistemicState, window: int = 20) -> float:
-        """Compute a damping multiplier in [0.5, 1.0] based on rupture flip frequency.
-        More flips -> smaller factor."""
+        """Damping multiplier in [0.5, 1.0] based on rupture flip frequency."""
         hist = state.history[-window:]
         if len(hist) < 4:
             return 1.0
@@ -497,12 +463,7 @@ class EpistemicGraph:
         return float(np.clip(factor, 0.5, 1.0))
 
     def stats(self) -> Dict[str, Any]:
-        """Quick aggregate snapshot for dashboards.
-
-        Returns
-        -------
-        {node_name: {"ruptures", "mean_drift", "std_drift", "last_symbol"}}
-        """
+        """Quick aggregate snapshot for dashboards."""
         out: Dict[str, Any] = {}
         for name, s in self.nodes.items():
             ds = s.drift_stats(window=min(50, len(s.history)))
@@ -524,12 +485,7 @@ class EpistemicGraph:
         return {"nodes": node_stats, "edges": edge_stats}
 
     def adjacency(self) -> Dict[str, Dict[str, dict]]:
-        """Return the adjacency with edge metadata for visualization.
-
-        Returns
-        -------
-        {src: {dst: {"weight", "mode", "decay", "cooldown"}}}
-        """
+        """Return the adjacency with edge metadata for visualization."""
         adj: Dict[str, Dict[str, dict]] = {}
         for src, nbrs in self.edges.items():
             adj[src] = {
@@ -562,7 +518,7 @@ class EpistemicGraph:
             json.dump(payload, f, indent=2, ensure_ascii=False)
 
     def load_graph(self, path: str) -> None:
-        """Load adjacency/edge metadata from JSON. Nodes must pre-exist or will be created with defaults."""
+        """Load adjacency/edge metadata from JSON. Nodes are created if missing."""
         with open(path, "r", encoding="utf-8") as f:
             payload = json.load(f)
         self.damping = float(payload.get("damping", self.damping))
@@ -584,7 +540,7 @@ class EpistemicGraph:
                 if dst not in self.nodes:
                     self.add(dst)
                 e = Edge(
-                    weight=float(meta.get("weight", 0.5)),
+                    weight=float(abs(meta.get("weight", 0.5))),
                     mode=str(meta.get("mode", "pressure")),
                     decay=float(meta.get("decay", 0.85)),
                     cooldown=int(meta.get("cooldown", 5)),
@@ -630,6 +586,8 @@ class EpistemicGraph:
                     issues.append(f"decay out of (0,1]: {src}->{dst} decay={e.decay}")
                 if e.cooldown < 0:
                     issues.append(f"negative cooldown on {src}->{dst}")
+                if e.weight < 0:
+                    issues.append(f"negative weight on {src}->{dst}")
         return {"ok": len(issues) == 0, "issues": issues}
 
     def degree(self, name: Optional[str] = None) -> Any:
@@ -692,18 +650,14 @@ class EpistemicGraph:
                 self.link(src, dst, weight=abs(w), mode=mode, decay=decay, cooldown=cooldown)
 
     def replay(self, evidence_sequence: List[Dict[str, Any]]) -> List[Dict[str, Dict[str, Any]]]:
-        """Replay a list of evidence dicts (each is {node: R}) with live propagation.
-        Returns per-step snapshots mapping node->last_log.
-        """
+        """Replay a list of evidence dicts (each is {node: R}) with live propagation."""
         out: List[Dict[str, Dict[str, Any]]] = []
         for step_ev in evidence_sequence:
             out.append(self.step_all(step_ev))
         return out
 
     def predict_influence(self, src: str, dst: str, post: Optional[Dict[str, Any]] = None, rupture: Optional[bool] = None, depth: int = 1) -> float:
-        """Compute the capped magnitude that *would* be applied from src->dst for the given `post` (or last src post).
-        Does not mutate state.
-        """
+        """Compute the capped magnitude that *would* be applied from src->dst; does not mutate state."""
         if src not in self.nodes or dst not in self.nodes:
             return 0.0
         if depth < 1:
