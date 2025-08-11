@@ -1,7 +1,7 @@
 [project]
 name = "cognize"
-version = "0.1.6"
-description = "Programmable cognition for systems."
+version = "0.1.7"
+description = "Programmable cognition for Python systems."
 keywords = ["cognition", "epistemic", "rupture", "projection", "AI", "symbolic", "drift"]
 authors = [{ name = "Pulikanti Sashi Bharadwaj", email = "bharadwajpulikanti11@gmail.com" }]
 license = { text = "Apache-2.0" }
