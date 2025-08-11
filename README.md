@@ -49,7 +49,7 @@ pip install cognize
 |:------:|------------------------------|
 | `V`    | Belief / Projection          |
 | `R`    | Reality signal               |
-| `∆`    | Distortion (`|R−V|` or `‖R−V‖`) |
+| `∆`    | Distortion (`R−V`)           |
 | `Θ`    | Rupture threshold            |
 | `E`    | Misalignment memory          |
 | `⊙`    | Realignment operator         |
