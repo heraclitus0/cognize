@@ -20,6 +20,8 @@ from __future__ import annotations
 
 __author__ = "Pulikanti Sashi Bharadwaj"
 __license__ = "Apache-2.0"
+__version__ = "0.1.6"
+
 
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
