@@ -5,9 +5,9 @@ README = Path("README.md").read_text(encoding="utf-8")
 
 setup(
     name="cognize",
-    version="0.1.6", 
+    version="0.1.7", 
     author="Pulikanti Sashi Bharadwaj",
-    description="Programmable cognition for systems.",
+    description="Programmable cognition for Python systems.",
     long_description=README,
     long_description_content_type="text/markdown",
     url="https://github.com/heraclitus0/cognize",
