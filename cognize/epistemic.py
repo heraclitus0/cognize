@@ -840,39 +840,76 @@ class EpistemicState:
     # -----------------------
 
     def enable_auto_evolution(
-        self,
-        param_space: Dict[str, Dict[str, Any]],
-        every: int = 30,
-        rate: float = 1.0,
-        margin: float = 1.02,
-    ) -> None:
-        if not self.policy_manager:
-            raise ValueError("Auto-evolution requires a PolicyManager on this state.")
-        if hasattr(self.policy_manager, "set_param_space"):
-            try:
-                normalized: Dict[str, Dict[str, Any]] = {}
-                for pid, params in param_space.items():
-                    normalized[pid] = {}
-                    for k, v in params.items():
-                        if isinstance(v, tuple) and len(v) in (2, 3):
-                            low, high, *rest = v
-                            sigma = rest[0] if rest else 0.05
-                            normalized[pid][k] = self.policy_manager.ParamRange(float(low), float(high), float(sigma))  # type: ignore
-                        else:
-                            normalized[pid][k] = v
-                self.policy_manager.set_param_space(normalized)  # type: ignore
-            except Exception:
-                self.policy_manager.set_param_space(param_space)  # type: ignore
+    self,
+    param_space: Dict[str, Dict[str, Any]],
+    every: int = 30,
+    rate: float = 1.0,
+    margin: float = 1.02,
+) -> None:
+    """
+    Configure bounded parameter evolution on the attached policy_manager.
 
-        for attr, val in (
-            ("evolve_every", int(max(5, every))),
-            ("evolve_rate", float(rate)),
-            ("evolve_margin", float(max(1.0, margin))),
-        ):
-            if hasattr(self.policy_manager, attr):
-                setattr(self.policy_manager, attr, val)
+    Compatible with:
+      - Built-in PolicyManager (has .ParamRange)
+      - Meta-learning PolicyManager (expects ParamRange-like objects with .low/.high/.sigma and .clamp())
+    """
+    if not self.policy_manager or not hasattr(self.policy_manager, "set_param_space"):
+        raise ValueError("Auto-evolution requires a PolicyManager with set_param_space().")
 
-        self._log_event("auto_evolution_enabled", {"every": int(every), "rate": float(rate), "margin": float(margin)})
+    pm = self.policy_manager
+
+    # 1) Choose a ParamRange constructor: manager's own if present, else a local shim.
+    PR = getattr(pm, "ParamRange", None)
+
+    class _ShimParamRange:
+        __slots__ = ("low", "high", "sigma")
+        def __init__(self, low: float, high: float, sigma: float = 0.05):
+            self.low = float(low); self.high = float(high); self.sigma = float(max(0.0, sigma))
+        def clamp(self, x: float) -> float:
+            return float(min(max(float(x), self.low), self.high))
+
+    def _make_pr(low: float, high: float, sigma: float) -> Any:
+        ctor = PR if callable(PR) else _ShimParamRange
+        return ctor(float(low), float(high), float(sigma))
+
+    def _is_paramrange_like(x: Any) -> bool:
+        return all(hasattr(x, a) for a in ("low", "high", "sigma")) and callable(getattr(x, "clamp", None))
+
+    # 2) Normalize incoming param_space
+    normalized: Dict[str, Dict[str, Any]] = {}
+    for pid, params in (param_space or {}).items():
+        normalized[pid] = {}
+        for k, v in (params or {}).items():
+            if isinstance(v, tuple) and (2 <= len(v) <= 3):
+                low, high, *rest = v
+                sigma = rest[0] if rest else 0.05
+                normalized[pid][k] = _make_pr(low, high, sigma)
+            elif _is_paramrange_like(v):
+                normalized[pid][k] = v
+            else:
+                normalized[pid][k] = v  # constant / categorical, advisory
+
+    # 3) Ship space into the manager
+    try:
+        pm.set_param_space(normalized)  # type: ignore
+    except Exception as e:
+        self._log_event("auto_evolution_paramspace_error", {"error": str(e)})
+        pm.set_param_space(param_space)  # type: ignore
+
+    # 4) Apply cadence & margins if the manager supports them
+    for attr, val in (
+        ("evolve_every", int(max(5, every))),
+        ("evolve_rate", float(rate)),
+        ("evolve_margin", float(max(1.0, margin))),
+    ):
+        if hasattr(pm, attr):
+            setattr(pm, attr, val)
+
+    self._log_event("auto_evolution_enabled", {
+        "every": int(every), "rate": float(rate), "margin": float(margin),
+        "manager": type(pm).__name__,
+        "range_ctor": ("manager.ParamRange" if callable(PR) else "shim"),
+    })
 
     # -----------------------
     # Persistence helpers for policy memory
