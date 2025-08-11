@@ -33,6 +33,9 @@ import math
 import warnings
 import numpy as np
 
+# Canonical perception adapter (single source of truth)
+from .perception import Perception  # re-exported below via __all__
+
 # ---------------------------
 # Typing shorthands
 # ---------------------------
@@ -218,58 +221,6 @@ def sbar_projection(state: "EpistemicState", R_val: float) -> float:
 
 
 # ---------------------------
-# Optional: lightweight Perception hook contract
-# ---------------------------
-
-class Perception:
-    """
-    Optional adapter that converts dict inputs (text/image/sensor/etc.) into a
-    (optionally normalized) evidence vector (np.ndarray).
-    """
-
-    def __init__(
-        self,
-        text_encoder: Optional[Callable[[str], Vector]] = None,
-        image_encoder: Optional[Callable[[Any], Vector]] = None,
-        sensor_fusion: Optional[Callable[[Dict[str, float]], Vector]] = None,
-        normalize: bool = True,
-    ):
-        self.text_encoder = text_encoder
-        self.image_encoder = image_encoder
-        self.sensor_fusion = sensor_fusion
-        self.normalize = bool(normalize)
-
-    def process(self, inputs: Dict[str, Any]) -> Vector:
-        vecs: List[Vector] = []
-        if "text" in inputs and self.text_encoder:
-            try:
-                vecs.append(np.asarray(self.text_encoder(inputs["text"]), dtype=float))
-            except Exception as e:
-                raise ValueError(f"Perception.text_encoder failed: {e}")
-        if "image" in inputs and self.image_encoder:
-            try:
-                vecs.append(np.asarray(self.image_encoder(inputs["image"]), dtype=float))
-            except Exception as e:
-                raise ValueError(f"Perception.image_encoder failed: {e}")
-        if "sensor" in inputs and self.sensor_fusion:
-            try:
-                vecs.append(np.asarray(self.sensor_fusion(inputs["sensor"]), dtype=float))
-            except Exception as e:
-                raise ValueError(f"Perception.sensor_fusion failed: {e}")
-        if not vecs:
-            raise ValueError("Perception: no supported modalities in inputs.")
-        # shape validation
-        shapes = {tuple(v.shape) for v in vecs}
-        if len(shapes) != 1:
-            raise ValueError(f"Perception: inconsistent vector shapes {shapes}.")
-        V = np.stack(vecs, axis=0).mean(axis=0)
-        if self.normalize:
-            n = _l2_norm(V)
-            V = V / n
-        return V.astype(float)
-
-
-# ---------------------------
 # Meta-policy scaffolding (safe-by-construction)
 # ---------------------------
 
@@ -314,7 +265,7 @@ class PolicyMemory:
             {
                 "ctx": {k: _sanitize(v) for k, v in ctx.items()},
                 "id": spec.id,
-                "params": {k: _sanitize(v) for k, v in (spec.params or {}).items()},
+                "params": {k: _sanitize(v) for k, v in (spec.params or {}).items() |},
                 "reward": float(reward),
                 "ts": _now_iso(),
             }
@@ -1238,6 +1189,6 @@ __all__ = [
     "collapse_randomized",
     "sbar_projection",
     # helpers
-    "Perception",
+    "Perception",  # re-export from cognize.perception
     "SAFE_SPECS",
 ]
