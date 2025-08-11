@@ -59,7 +59,8 @@ pip install cognize
 ## Quick start (scalar)
 
 ```python
-from cognize import EpistemicState, threshold_adaptive, realign_tanh, collapse_soft_decay
+from cognize import EpistemicState
+from cognize.policies import threshold_adaptive, realign_tanh, collapse_soft_decay
 
 state = EpistemicState(V0=0.5, threshold=0.35, realign_strength=0.3)
 state.inject_policy(
