@@ -5,7 +5,7 @@ README = Path("README.md").read_text(encoding="utf-8")
 
 setup(
     name="cognize",
-    version="0.1.6",  # keep in sync with pyproject/__init__
+    version="0.1.6", 
     author="Pulikanti Sashi Bharadwaj",
     description="Programmable cognition for systems.",
     long_description=README,
