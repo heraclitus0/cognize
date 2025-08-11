@@ -2,39 +2,12 @@
 # -*- coding: utf-8 -*-
 """
 EpistemicState — Continuity Theory aligned cognition kernel
-===========================================================
+=====================================================================
 
-Implements the core loop of Continuity Theory (CT) + RCC primitives:
-
-Symbols (with ASCII fallbacks):
-- ⊙  (CONTINUITY): Continuity Monad (recursive realignment operator)
-- ∆  (DISTORTION): Distortion magnitude between projection V and reception R
-- S̄  (DIVERGENCE): Projected divergence (directional deviation of reception vs projection)
-- Θ  (THRESHOLD):  Rupture threshold (structured failure boundary)
-- E  (MISALIGNMENT): Cumulative misalignment memory
-- ∅  (EMPTY): No cognition received
-- ⚠  (RUPTURE): Rupture detected
-- Ĉ  (COGNITION): Cognitive agent (optional) that edits memory and/or policies
-
-Key design goals
-----------------
-1) Keep the *core loop* pure and auditable:
-   V(t) → R(t) → ∆(t) → (⊙ if absorbable) else Θ; cognition may mutate V or policy.
-
-2) Make everything *pluggable*:
-   - Perception adapters (text/image/sensor) → normalized evidence vectors (R)
-   - Policies (threshold/realign/collapse/divergence) as callables
-   - Meta-policy manager (runtime selection/promotion with safety)
-   - Memory, safety monitors, goal manager: optional satellites
-
-3) Operate on scalars *and* vectors safely (shape checks, bounded gains).
-
-4) Determinism when needed (local RNG), and rich telemetry for explainability.
-
-This file intentionally hosts the kernel + thin integration hooks so downstream modules
-(perception/network/meta/memory/safety/goals) can attach without bloating imports.
+This module intentionally hosts the kernel + thin integration hooks so downstream
+modules (perception/network/meta/memory/safety/goals) can attach without heavy
+imports.
 """
-
 from __future__ import annotations
 
 __author__ = "Pulikanti Sashi Bharadwaj"
@@ -44,13 +17,15 @@ __version__ = "0.1.6"
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 from datetime import datetime
-import numpy as np
-import uuid
+from functools import partial
+import inspect
 import json
 import csv
-import copy
+import uuid
 import math
+import copy
 import warnings
+import numpy as np
 
 # ---------------------------
 # Typing shorthands
@@ -66,87 +41,108 @@ Evidence = Union[Number, Vector, Dict[str, Any]]  # Dict → routed via Percepti
 def _now_iso() -> str:
     return datetime.utcnow().isoformat()
 
+
 def _l2_norm(v: Vector) -> float:
     n = float(np.linalg.norm(v))
     return n if n != 0.0 else 1.0
 
+
 def _clip(x: float, lo: float, hi: float) -> float:
     return float(min(max(x, lo), hi))
 
+
+def _finite(x: Any) -> Optional[float]:
+    try:
+        f = float(x)
+    except Exception:
+        return None
+    return f if math.isfinite(f) else None
+
+
 def _sanitize(v: Any) -> Any:
-    """Make values JSON-/CSV-serializable and human-friendly."""
+    """Make values JSON-/CSV-serializable and human-friendly (no NaN/Inf)."""
     if isinstance(v, (np.integer,)):
         return int(v)
-    if isinstance(v, (np.floating,)):
-        return float(v)
+    if isinstance(v, (float, np.floating)):
+        return _finite(v)
     if isinstance(v, np.ndarray):
-        return v.tolist()
+        lst = v.tolist()
+        out: List[Any] = []
+        for e in lst:
+            if isinstance(e, (float, int, np.floating, np.integer)):
+                out.append(_finite(e))
+            else:
+                out.append(_sanitize(e))
+        return out
     if isinstance(v, (list, tuple)):
-        return list(v)
+        return [_sanitize(e) for e in v]
     if isinstance(v, (str, bool)) or v is None:
         return v
     try:
-        return float(v)
+        return _finite(float(v))
     except Exception:
         return str(v)
+
 
 # ---------------------------
 # Default policy primitives (safe templates)
 # ---------------------------
 
 # Threshold policies Θ(E, t, context)
+
 def threshold_static(state: "EpistemicState") -> float:
     """Constant threshold (baseline)."""
     return float(state.Θ)
 
-def threshold_adaptive(state: "EpistemicState", a: float = 0.05) -> float:
+
+def threshold_adaptive(state: "EpistemicState", a: float = 0.05, cap: float = 1.0) -> float:
     """Θ_t = base + a * E ; bounded for stability."""
-    return float(state.Θ + _clip(a * state.E, 0.0, 1.0))
+    return float(state.Θ + _clip(a * float(state.E), 0.0, cap))
 
-def threshold_stochastic(state: "EpistemicState", base_sigma: float = 0.01) -> float:
+
+def threshold_stochastic(state: "EpistemicState", sigma: float = 0.01) -> float:
     """Adds Gaussian noise to baseline threshold using state's local RNG."""
-    sigma = _clip(base_sigma, 0.0, 0.2)
-    return float(state.Θ + state.rng.normal(0.0, sigma))
+    sigma = _clip(float(sigma), 0.0, 0.2)
+    return float(state.Θ + float(state.rng.normal(0.0, sigma)))
 
-def threshold_combined(state: "EpistemicState", a: float = 0.05, sigma: float = 0.01) -> float:
+
+def threshold_combined(
+    state: "EpistemicState", a: float = 0.05, sigma: float = 0.01, cap: float = 1.0
+) -> float:
     """Adaptive + stochastic threshold model."""
-    return float(
-        state.Θ
-        + _clip(a * state.E, 0.0, 1.0)
-        + state.rng.normal(0.0, _clip(sigma, 0.0, 0.2))
-    )
+    return float(state.Θ + _clip(a * float(state.E), 0.0, cap) + float(state.rng.normal(0.0, _clip(sigma, 0.0, 0.2))))
 
-# Realignment ⊙(V, ∆, E, k, context) → V'
+
+# Realignment ⊙(V, ∆, E, k) → V'
+
 def realign_linear(state: "EpistemicState", R_val: float, delta: float) -> float:
-    """
-    Scalar path (state.V is float). For vectors, the kernel handles a separate bounded step.
-    """
-    step = state.k * delta * (1.0 + state.E)
-    step = _clip(step, -state.step_cap, state.step_cap)
-    sign = 1.0 if (R_val - float(state.V)) >= 0.0 else -1.0
+    """Scalar path realigner. Vectors are handled in the kernel."""
+    step = float(state.k) * float(delta) * (1.0 + float(state.E))
+    step = _clip(step, -float(state.step_cap), float(state.step_cap))
+    sign = 1.0 if (float(R_val) - float(state.V)) >= 0.0 else -1.0
     return float(float(state.V) + sign * step)
+
 
 def realign_tanh(state: "EpistemicState", R_val: float, delta: float) -> float:
-    """
-    Smoothly saturating realignment; attenuates as delta grows; uses E via tanh.
-    """
-    eps = state.epsilon if state.epsilon > 0 else 1e-6
-    gain = np.tanh(state.k * delta) * (1.0 + np.tanh(state.E / eps))
-    gain = _clip(gain, -state.step_cap, state.step_cap)
-    sign = 1.0 if (R_val - float(state.V)) >= 0.0 else -1.0
+    """Smoothly saturating realignment; attenuates as delta grows; uses E via tanh."""
+    eps = float(state.epsilon) if float(state.epsilon) > 0 else 1e-6
+    gain = float(np.tanh(float(state.k) * float(delta))) * (1.0 + float(np.tanh(float(state.E) / eps)))
+    gain = _clip(gain, -float(state.step_cap), float(state.step_cap))
+    sign = 1.0 if (float(R_val) - float(state.V)) >= 0.0 else -1.0
     return float(float(state.V) + sign * gain)
 
+
 def realign_decay_adaptive(state: "EpistemicState", R_val: float, delta: float) -> float:
-    """
-    Gain decays with E: k_eff = k / (1+E); stabilizes when memory high.
-    """
-    k_eff = _clip(state.k / (1.0 + state.E), 0.0, 1.0)
-    step = _clip(k_eff * delta, -state.step_cap, state.step_cap)
-    sign = 1.0 if (R_val - float(state.V)) >= 0.0 else -1.0
+    """Gain decays with E: k_eff = k / (1+E); stabilizes when memory high."""
+    k_eff = _clip(float(state.k) / (1.0 + float(state.E)), 0.0, 1.0)
+    step = _clip(k_eff * float(delta), -float(state.step_cap), float(state.step_cap))
+    sign = 1.0 if (float(R_val) - float(state.V)) >= 0.0 else -1.0
     return float(float(state.V) + sign * step)
+
 
 # Collapse policies (post-Θ): return (V', E')
 # Allow vector-aware V' by permitting Union[float, Vector]
+
 def collapse_reset(
     state: "EpistemicState", R_val: Optional[float] = None
 ) -> Tuple[Union[float, Vector], float]:
@@ -155,6 +151,7 @@ def collapse_reset(
         return np.zeros_like(state.V, dtype=float), 0.0
     return 0.0, 0.0
 
+
 def collapse_soft_decay(
     state: "EpistemicState",
     R_val: Optional[float] = None,
@@ -162,9 +159,12 @@ def collapse_soft_decay(
     beta: float = 0.3,
 ) -> Tuple[Union[float, Vector], float]:
     """Partial decay of projection and memory."""
+    gamma = _clip(float(gamma), 0.0, 1.0)
+    beta = _clip(float(beta), 0.0, 1.0)
     if isinstance(state.V, np.ndarray):
-        return np.asarray(state.V, dtype=float) * _clip(gamma, 0.0, 1.0), float(state.E) * _clip(beta, 0.0, 1.0)
-    return float(state.V) * _clip(gamma, 0.0, 1.0), float(state.E) * _clip(beta, 0.0, 1.0)
+        return np.asarray(state.V, dtype=float) * gamma, float(state.E) * beta
+    return float(state.V) * gamma, float(state.E) * beta
+
 
 def collapse_adopt_R(
     state: "EpistemicState", R_val: Optional[float] = None
@@ -175,19 +175,22 @@ def collapse_adopt_R(
     """
     if isinstance(state.V, np.ndarray) and getattr(state, "_last_R_vec", None) is not None:
         return np.asarray(state._last_R_vec, dtype=float), 0.0
-    if R_val is None:
-        R_val = float(state.V) if not isinstance(state.V, np.ndarray) else 0.0
-    return float(R_val), 0.0
+    rv = float(R_val if R_val is not None else (float(state.V) if not isinstance(state.V, np.ndarray) else 0.0))
+    return rv, 0.0
+
 
 def collapse_randomized(
     state: "EpistemicState", R_val: Optional[float] = None, sigma: float = 0.1
 ) -> Tuple[Union[float, Vector], float]:
     """Collapse to a small random perturbation around 0; memory cleared."""
+    sig = _clip(float(sigma), 0.0, 1.0)
     if isinstance(state.V, np.ndarray):
-        return state.rng.normal(0.0, _clip(sigma, 0.0, 1.0), size=state.V.shape), 0.0
-    return float(state.rng.normal(0.0, _clip(sigma, 0.0, 1.0))), 0.0
+        return state.rng.normal(0.0, sig, size=state.V.shape), 0.0
+    return float(state.rng.normal(0.0, sig)), 0.0
+
 
 # Divergence S̄ — vector-aware projection; fallback to directional scalar proxy
+
 def sbar_projection(state: "EpistemicState", R_val: float) -> float:
     """
     If V and last R are vectors: project (R-V) onto V̂ and normalize by ‖V‖.
@@ -198,11 +201,12 @@ def sbar_projection(state: "EpistemicState", R_val: float) -> float:
         R = np.asarray(state._last_R_vec, dtype=float)
         d = R - V
         nV = _l2_norm(V)
-        # Project d along V direction, then scale by 1/‖V‖ for a unitless signal
         proj = float(np.dot(d, V / nV)) / nV
         return proj
     denom = 1.0 + abs(float(state.V)) if not isinstance(state.V, np.ndarray) else 1.0
-    return float((R_val - (float(state.V) if not isinstance(state.V, np.ndarray) else float(np.linalg.norm(state.V)))) / denom)
+    base = float(R_val - (float(state.V) if not isinstance(state.V, np.ndarray) else float(np.linalg.norm(state.V))))
+    return float(base / denom)
+
 
 # ---------------------------
 # Optional: lightweight Perception hook contract
@@ -210,11 +214,10 @@ def sbar_projection(state: "EpistemicState", R_val: float) -> float:
 
 class Perception:
     """
-    Optional adapter that converts dict inputs (text/image/sensor/etc.)
-    into a (optionally normalized) evidence vector (np.ndarray). You can supply a custom instance.
-
-    Set normalize=False if magnitude encodes signal strength (e.g., sensors where norm matters).
+    Optional adapter that converts dict inputs (text/image/sensor/etc.) into a
+    (optionally normalized) evidence vector (np.ndarray).
     """
+
     def __init__(
         self,
         text_encoder: Optional[Callable[[str], Vector]] = None,
@@ -246,46 +249,70 @@ class Perception:
                 raise ValueError(f"Perception.sensor_fusion failed: {e}")
         if not vecs:
             raise ValueError("Perception: no supported modalities in inputs.")
+        # shape validation
+        shapes = {tuple(v.shape) for v in vecs}
+        if len(shapes) != 1:
+            raise ValueError(f"Perception: inconsistent vector shapes {shapes}.")
         V = np.stack(vecs, axis=0).mean(axis=0)
         if self.normalize:
             n = _l2_norm(V)
             V = V / n
         return V.astype(float)
 
+
 # ---------------------------
-# Optional: Meta-policy scaffolding (safe-by-construction)
+# Meta-policy scaffolding (safe-by-construction)
 # ---------------------------
+
+
+def _bind_known_kwargs(fn: Optional[Callable], param_dict: Optional[Dict[str, Any]]):
+    """Return a partial(fn, **kw) for kwargs present in fn's signature."""
+    if not callable(fn) or not param_dict:
+        return fn
+    try:
+        sig = inspect.signature(fn)
+        kw = {k: v for k, v in (param_dict or {}).items() if k in sig.parameters}
+        return partial(fn, **kw) if kw else fn
+    except Exception:
+        return fn
+
 
 @dataclass
 class PolicySpec:
     id: str
     threshold_fn: Callable[["EpistemicState"], float]
     realign_fn: Callable[["EpistemicState", float, float], float]
-    collapse_fn: Callable[
-        ["EpistemicState", Optional[float]], Tuple[Union[float, Vector], float]
-    ]
+    collapse_fn: Callable[["EpistemicState", Optional[float]], Tuple[Union[float, Vector], float]]
     params: Dict[str, Any] = field(default_factory=dict)
     notes: str = ""
 
     def fns(self) -> Dict[str, Callable]:
-        return {"threshold": self.threshold_fn, "realign": self.realign_fn, "collapse": self.collapse_fn}
+        # Bind signature-aware kwargs (e.g., a, sigma, cap, gamma/beta)
+        tf = _bind_known_kwargs(self.threshold_fn, self.params)
+        rf = _bind_known_kwargs(self.realign_fn, self.params)
+        cf = _bind_known_kwargs(self.collapse_fn, self.params)
+        return {"threshold": tf, "realign": rf, "collapse": cf}
+
 
 class PolicyMemory:
     """Rolling memory of (ctx, policy id, params, reward) with JSON I/O hooks."""
+
     def __init__(self, cap: int = 4096):
         self.records: List[Dict[str, Any]] = []
         self.cap = int(cap)
 
     def remember(self, ctx: Dict[str, Any], spec: PolicySpec, reward: float) -> None:
-        self.records.append({
-            "ctx": {k: _sanitize(v) for k, v in ctx.items()},
-            "id": spec.id,
-            "params": {k: _sanitize(v) for k, v in spec.params.items()},
-            "reward": float(reward),
-            "ts": _now_iso(),
-        })
+        self.records.append(
+            {
+                "ctx": {k: _sanitize(v) for k, v in ctx.items()},
+                "id": spec.id,
+                "params": {k: _sanitize(v) for k, v in (spec.params or {}).items()},
+                "reward": float(reward),
+                "ts": _now_iso(),
+            }
+        )
         if len(self.records) > self.cap:
-            self.records = self.records[-self.cap:]
+            self.records = self.records[-self.cap :]
 
     def top_ids(self, k: int = 3) -> List[str]:
         if not self.records:
@@ -301,31 +328,34 @@ class PolicyMemory:
                 break
         return out
 
-    # Optional persistence (used by EpistemicState.save/load_policy_memory if provided)
     def save(self, path: str) -> None:
         with open(path, "w", encoding="utf-8") as f:
-            json.dump(self.records, f, indent=2, ensure_ascii=False)
+            json.dump(self.records, f, indent=2, ensure_ascii=False, allow_nan=False)
 
     def load(self, path: str) -> None:
         with open(path, "r", encoding="utf-8") as f:
             self.records = json.load(f)
-        # sanity: cap
         if len(self.records) > self.cap:
-            self.records = self.records[-self.cap:]
+            self.records = self.records[-self.cap :]
+
 
 # Reward & Safety utilities
+
 def _default_reward(window: List[Dict[str, Any]]) -> float:
     """
-    Reward = -(rupture_rate) - 0.2*mean_drift - 0.05*time_to_realign_mean
-    Larger is better (closer to 0 up to negative values).
+    Reward = -(rupture_rate) - 0.2*mean_drift - 0.05*mean(time_to_realign)
+    Larger is better (closer to 0).
     """
     if not window:
         return -1e9
     import numpy as _np
+
     drift = _np.array([w.get("∆", 0.0) for w in window], dtype=float)
     rupt = _np.array([1.0 if w.get("ruptured", False) else 0.0 for w in window], dtype=float).mean()
-    ttr  = _np.array([w.get("time_to_realign", 1.0) for w in window], dtype=float).mean()
-    return float((-1.0 * rupt) + (-0.2 * drift.mean()) + (-0.05 * ttr))
+    ttrs = [w.get("time_to_realign") for w in window if w.get("time_to_realign") is not None]
+    ttr = float(_np.mean(ttrs)) if ttrs else 1.0
+    return float((-1.0 * rupt) + (-0.2 * float(drift.mean())) + (-0.05 * ttr))
+
 
 def _safety_flags(window: List[Dict[str, Any]]) -> Dict[str, Any]:
     """
@@ -335,28 +365,28 @@ def _safety_flags(window: List[Dict[str, Any]]) -> Dict[str, Any]:
       - runaway_E: E grows monotonically (if E logged in entries)
     """
     import numpy as _np
+
     if not window:
         return {"rupture_storm": False, "oscillation": False, "runaway_E": False, "count": 0}
 
     rupt_seq = _np.array([1 if w.get("ruptured", False) else 0 for w in window], dtype=int)
-    storm = rupt_seq.mean() > 0.5
+    storm = float(rupt_seq.mean()) > 0.5
 
-    # Oscillation heuristic: many sign changes between 0/1 across the window
-    changes = _np.abs(_np.diff(rupt_seq)).sum()
+    changes = int(_np.abs(_np.diff(rupt_seq)).sum())
     osc = changes >= max(4, len(rupt_seq) // 3)
 
-    # Runaway E if present
     Es = _np.array([w.get("E", None) for w in window if "E" in w], dtype=float)
     runaway = False
     if Es.size >= 4:
         diffs = _np.diff(Es)
-        runaway = _np.all(diffs > 0.0) and Es[-1] > Es[0] * 1.2  # monotonic + 20% increase
+        runaway = bool(_np.all(diffs > 0.0) and Es[-1] > Es[0] * 1.2)
 
     return {"rupture_storm": bool(storm), "oscillation": bool(osc), "runaway_E": bool(runaway), "count": len(window)}
 
-# Shadow evaluation runner
+
 class ShadowRunner:
     """Clone state → inject candidate policy → replay recent evidence → compute reward & safety flags."""
+
     def __init__(
         self,
         reward_fn: Callable[[List[Dict[str, Any]]], float] = _default_reward,
@@ -367,18 +397,41 @@ class ShadowRunner:
         self.min_window = int(min_window)
         self.max_window = int(max_window)
 
+    @staticmethod
+    def _apply_params_to_clone(st: "EpistemicState", params: Dict[str, Any]) -> None:
+        for key in ("k", "Θ", "step_cap", "decay_rate", "epsilon"):
+            if key in (params or {}) and hasattr(st, key):
+                try:
+                    setattr(st, key, float(params[key]))
+                except Exception:
+                    pass
+
     def replay(self, state: "EpistemicState", spec: PolicySpec, evidence_seq: List[Evidence]) -> Tuple[float, Dict[str, Any]]:
         if not evidence_seq:
             return -1e9, {"reason": "empty_window"}
-        seq = evidence_seq[-self.max_window:]
+        seq = evidence_seq[-self.max_window :]
         if len(seq) < self.min_window:
             return -1e9, {"reason": "short_window", "n": len(seq)}
 
         s = copy.deepcopy(state)
-        s.inject_policy(**spec.fns())
+        # isolate from live PolicyManager
+        pm_saved = getattr(s, "policy_manager", None)
+        s.policy_manager = None
+
+        # advisory params onto clone
+        self._apply_params_to_clone(s, getattr(spec, "params", {}))
+
+        # bind functions with params
+        fns = spec.fns()
+        s.inject_policy(**fns)
+
         base_t = len(s.history)
-        for r in seq:
-            s.receive(r, source="shadow")
+        try:
+            for r in seq:
+                s.receive(r, source="shadow")
+        finally:
+            s.policy_manager = pm_saved
+
         window = s.history[base_t:]
         if not window:
             return -1e9, {"reason": "no_delta"}
@@ -387,17 +440,13 @@ class ShadowRunner:
         flags = _safety_flags(window)
         return float(r), flags
 
-# Bounded, safety-gated PolicyManager
+
 class PolicyManager:
     """
     ε-greedy policy selector with shadow evaluation and safety gating.
-    - epsilon: exploration rate
-    - promote_margin: require candidate_reward >= promote_margin * current_reward
-    - cooldown_steps: prevent thrashing; skip promotion if last promotion too recent
-
-    Optional bounded evolution (parameter mutation) can be enabled by providing
-    a 'param_space' via set_param_space() and using evolve_if_due().
+    Optional bounded evolution via `set_param_space()` and `evolve_if_due()`.
     """
+
     def __init__(
         self,
         base_specs: List[PolicySpec],
@@ -418,8 +467,6 @@ class PolicyManager:
         self.cooldown_steps = int(max(0, cooldown_steps))
         self._last_promotion_step: Optional[int] = None
         self.last_promotion: Optional[Dict[str, Any]] = None
-
-        # RNG for exploration (deterministic if provided)
         self.rng: np.random.Generator = rng or np.random.default_rng()
 
         # Evolution scaffolding
@@ -436,10 +483,6 @@ class PolicyManager:
         return f"b{len(bins)}"
 
     def context_bucket(self, ctx: Dict[str, Any]) -> str:
-        """
-        Map raw context into a coarse, stable bucket string.
-        Expected ctx keys (optional, defaults handled): E, mean_drift_20, rupt_rate_20, domain, step
-        """
         E = float(ctx.get("E", 0.0))
         md = float(ctx.get("mean_drift_20", 0.0))
         rr = float(ctx.get("rupt_rate_20", 0.0))
@@ -450,11 +493,11 @@ class PolicyManager:
         return f"{dom}|E:{Eb}|D:{Db}|R:{Rb}"
 
     def _current_spec(self, state: "EpistemicState") -> PolicySpec:
-        """Snapshot the state's current policy triple for comparison."""
         th = state._threshold_fn if state._threshold_fn else threshold_static
         rl = state._realign_fn if state._realign_fn else realign_linear
         cp = state._collapse_fn if state._collapse_fn else collapse_reset
-        return PolicySpec("__current__", th, rl, cp, params={"k": getattr(state, "k", None), "Θ": getattr(state, "Θ", None)})
+        # Reflect the current effective callables without params to avoid overriding
+        return PolicySpec("__current__", th, rl, cp, params={})
 
     def _top_candidates(self, bucket: str, k: int = 3) -> List[PolicySpec]:
         top_ids = self.memory.top_ids(k=k)
@@ -464,7 +507,6 @@ class PolicyManager:
 
     @staticmethod
     def _apply_params_to_state(state: "EpistemicState", params: Dict[str, Any]) -> None:
-        """Apply recognized params from PolicySpec to EpistemicState."""
         if not params:
             return
         for key in ("k", "Θ", "step_cap", "decay_rate", "epsilon"):
@@ -472,23 +514,17 @@ class PolicyManager:
                 try:
                     setattr(state, key, float(params[key]))
                 except Exception:
-                    pass  # ignore bad types silently; params are advisory
+                    pass
 
     def maybe_adjust(self, state: "EpistemicState", ctx: Dict[str, Any], recent_evidence: List[Evidence]) -> Optional[str]:
-        """
-        Evaluate candidates and promote the best safe policy if it beats current by margin.
-        Returns promoted policy id or None.
-        """
         step = int(ctx.get("t", len(state.history)))
         if self._last_promotion_step is not None and (step - self._last_promotion_step) < self.cooldown_steps:
             return None
 
         bucket = self.context_bucket(ctx)
         explore = (self.rng.random() < self.epsilon) or (not self.memory.records)
-
         candidates = list(self.specs.values()) if explore else self._top_candidates(bucket, k=min(3, len(self.specs)))
 
-        # Evaluate candidates
         best_spec: Optional[PolicySpec] = None
         best_r: float = -1e12
         best_flags: Dict[str, Any] = {}
@@ -500,15 +536,12 @@ class PolicyManager:
 
         # Compare with current behavior
         current_spec = self._current_spec(state)
-        current_r, current_flags = self.shadow.replay(state, current_spec, recent_evidence)
+        current_r, _ = self.shadow.replay(state, current_spec, recent_evidence)
 
-        # Safety gating
         unsafe = bool(best_flags.get("rupture_storm") or best_flags.get("oscillation") or best_flags.get("runaway_E"))
 
         if best_spec and (best_r > self.promote_margin * current_r) and not unsafe:
-            # Promote
             state.inject_policy(**best_spec.fns())
-            # Apply advisory params (k, Θ, etc.)
             self._apply_params_to_state(state, best_spec.params or {})
             self.memory.remember(ctx, best_spec, best_r)
             self.last_promotion = {
@@ -524,14 +557,10 @@ class PolicyManager:
                 state._log_event("policy_promoted", self.last_promotion)
             return best_spec.id
 
-        # Remember baseline too (for analytics)
         self.memory.remember(ctx, current_spec, current_r)
         return None
 
-    # ---------- Evolution scaffolding (bounded, no arbitrary codegen) ----------
-
     class ParamRange:
-        """Simple numeric range for mutations: uniform(low, high) with optional gaussian jitter."""
         def __init__(self, low: float, high: float, sigma: float = 0.05):
             self.low = float(low)
             self.high = float(high)
@@ -544,9 +573,6 @@ class PolicyManager:
             return float(min(max(base, self.low), self.high))
 
     def set_param_space(self, space: Dict[str, Dict[str, Any]]) -> None:
-        """
-        space: {policy_id: {param_name: ParamRange or (low, high[, sigma])}}
-        """
         norm: Dict[str, Dict[str, Any]] = {}
         for pid, params in space.items():
             norm[pid] = {}
@@ -558,14 +584,10 @@ class PolicyManager:
                 elif isinstance(v, PolicyManager.ParamRange):
                     norm[pid][k] = v
                 else:
-                    norm[pid][k] = v  # pass-through (fixed)
+                    norm[pid][k] = v
         self.param_space = norm
 
     def _mutate_spec(self, state: "EpistemicState", spec: PolicySpec) -> PolicySpec:
-        """
-        Produce a mutated copy of a spec within the allowable param ranges.
-        Only touches keys present in param_space[spec.id].
-        """
         if spec.id not in self.param_space:
             return spec
         new_params = dict(spec.params)
@@ -581,35 +603,27 @@ class PolicyManager:
             realign_fn=spec.realign_fn,
             collapse_fn=spec.collapse_fn,
             params=new_params,
-            notes=(spec.notes or "") + " [mutated]"
+            notes=(spec.notes or "") + " [mutated]",
         )
 
     def evolve_if_due(self, state: "EpistemicState", ctx: Dict[str, Any], recent: List[Evidence]) -> Optional[str]:
-        """
-        Attempt bounded mutation/promotion every `evolve_every` steps.
-        This is conservative: it never changes callables, only params metadata.
-        """
         if not self.param_space:
             return None
         step = int(ctx.get("t", len(state.history)))
         if step % max(5, int(self.evolve_every)) != 0:
             return None
 
-        # Choose a base (top performer in context or random explore)
         top_ids = self.memory.top_ids(k=min(3, len(self.specs)))
         base = self.specs.get(top_ids[0], None) if top_ids else None
         if base is None:
-            # fallback: any
             base = next(iter(self.specs.values()))
 
         cand = self._mutate_spec(state, base)
-        # Evaluate candidate (without altering functions, only params used for context/record)
         r_cand, flags_cand = self.shadow.replay(state, cand, recent)
-        r_curr, flags_curr = self.shadow.replay(state, self._current_spec(state), recent)
+        r_curr, _ = self.shadow.replay(state, self._current_spec(state), recent)
 
         unsafe = bool(flags_cand.get("rupture_storm") or flags_cand.get("oscillation") or flags_cand.get("runaway_E"))
         if not unsafe and r_cand > self.evolve_margin * r_curr:
-            # Record and (optionally) apply advisory params
             self.memory.remember(ctx, cand, r_cand)
             PolicyManager._apply_params_to_state(state, cand.params or {})
             self.last_promotion = {"id": cand.id, "reward": r_cand, "mutated_from": base.id, "step": step}
@@ -618,9 +632,11 @@ class PolicyManager:
             return cand.id
         return None
 
+
 # ---------------------------
 # EpistemicState core
 # ---------------------------
+
 
 class EpistemicState:
     """
@@ -648,35 +664,30 @@ class EpistemicState:
         divergence_fn: Optional[Callable[["EpistemicState", float], float]] = None,
         max_history: Optional[int] = None,
     ):
-        # Core state
         self.V: Union[float, Vector] = float(V0) if isinstance(V0, (int, float, np.number)) else np.asarray(V0, dtype=float)
         self.E: float = float(E0)
         self.Θ: float = float(threshold)
         self.k: float = float(realign_strength)
         self.decay_rate: float = float(_clip(decay_rate, 0.0, 1.0))
         self.step_cap: float = float(max(1e-6, step_cap))
-        self.epsilon: float = float(max(1e-9, epsilon))  # small constant used in tanh-based realign
+        self.epsilon: float = float(max(1e-9, epsilon))
 
-        # Local RNG (no global pollution)
         self.rng: np.random.Generator = np.random.default_rng(int(rng_seed) if rng_seed is not None else None)
 
-        # Policy hooks
         self._threshold_fn: Optional[Callable[["EpistemicState"], float]] = None
         self._realign_fn: Optional[Callable[["EpistemicState", float, float], float]] = None
         self._collapse_fn: Optional[Callable[["EpistemicState", Optional[float]], Tuple[Union[float, Vector], float]]] = None
         self._context_fn: Optional[Callable[..., Any]] = None
         self._divergence_fn: Callable[["EpistemicState", float], float] = divergence_fn or sbar_projection
 
-        # Satellites
         self.perception: Optional[Perception] = perception
         self.policy_manager: Optional[PolicyManager] = policy_manager
 
-        # Runtime/logging (initialized before any _log_event calls)
         self.history: List[Dict[str, Any]] = []
         self.meta_ruptures: List[Dict[str, Any]] = []
         self.event_log: List[Dict[str, Any]] = []
         self._rupture_count: int = 0
-        self._last_symbol: str = "∅"  # EMPTY
+        self._last_symbol: str = "∅"
         self._triggers: Dict[str, Callable[[], Any]] = {}
         self._time: int = 0
         self._id: str = str(uuid.uuid4())[:8]
@@ -684,17 +695,12 @@ class EpistemicState:
         self._log = bool(log_history)
         self._max_history: Optional[int] = int(max_history) if max_history is not None else None
 
-        # Derived metrics (rolling)
         self._rolling_ruptures: List[int] = []
         self._rolling_drift: List[float] = []
 
-        # Divergence helper
         self._last_R_vec: Optional[Vector] = None
-
-        # Real time-to-realign tracker
         self._since_last_rupture: Optional[int] = None
 
-        # Note seed after logs exist
         if rng_seed is not None:
             self._log_event("rng_seeded", {"seed": int(rng_seed)})
 
@@ -706,15 +712,6 @@ class EpistemicState:
         """
         Feed reception R (float/vector OR dict for multi-modal if Perception is attached).
         Implements the CT loop per step and logs the outcome.
-
-        Flow:
-          1) Resolve reality → R_val (scalar proxy even if V is scalar; vectors handled separately)
-          2) Compute ∆ (scalar for scalars; for vectors, use norm of (R_vec - V_vec))
-          3) Compute S̄ (directional; for vectors, cosine-ish signed component if possible)
-          4) Evaluate Θ policy; if ∆ > Θ' => Θ (rupture) → collapse policy
-             else ⊙ (realign) policy
-          5) Update E (misalignment memory)
-          6) Meta-policy manager (if present) may evaluate and promote/evolve periodically
         """
         # 1) Resolve R
         R_is_dict = isinstance(R, dict)
@@ -723,7 +720,7 @@ class EpistemicState:
         if R_is_dict:
             if not self.perception:
                 raise ValueError("Dict evidence requires a Perception adapter.")
-            R_vec = self.perception.process(R)  # normalized or not based on config
+            R_vec = self.perception.process(R)
         elif isinstance(R, (list, tuple, np.ndarray)):
             R_vec = np.asarray(R, dtype=float)
         elif isinstance(R, (int, float, np.number)):
@@ -733,10 +730,11 @@ class EpistemicState:
 
         V_is_scalar = not isinstance(self.V, np.ndarray)
 
-        # Align types for computation
+        # Scalar→vector soft-start
         if R_vec is not None and V_is_scalar:
-            # Promote V to vector of same shape (soft-start alternative could project magnitude)
-            self.V = np.zeros_like(R_vec, dtype=float)
+            mag = float(self.V)
+            rv = np.asarray(R_vec, dtype=float)
+            self.V = (rv / _l2_norm(rv)) * mag
             V_is_scalar = False
 
         # 2) Compute ∆ and scalar R_val for policy signatures
@@ -745,32 +743,28 @@ class EpistemicState:
             V_vec = np.asarray(self.V, dtype=float)
             delta_vec = R_vec - V_vec
             delta_mag = float(np.linalg.norm(delta_vec))
-            R_val = float(np.linalg.norm(R_vec))  # scalar proxy for policy signatures
+            R_val = float(np.linalg.norm(R_vec))
             self._last_R_vec = np.asarray(R_vec, dtype=float)
         else:
-            R_val = float(R_val_scalar)  # type: ignore
+            R_val = float(R_val_scalar)  # type: ignore[name-defined]
             delta_mag = abs(R_val - float(self.V))
-            self._last_R_vec = None  # not used for scalar path
+            self._last_R_vec = None
 
-        # 3) Divergence S̄ (projected directional deviation)
+        # 3) Divergence S̄
         try:
             S_bar = float(self._divergence_fn(self, R_val))
         except Exception as e:
             warnings.warn(f"Divergence function failed ({e}); using directional proxy.")
-            S_bar = float(
-                (R_val - (float(self.V) if V_is_scalar else float(np.linalg.norm(self.V))))
-            )  # fallback
+            S_bar = float((R_val - (float(self.V) if V_is_scalar else float(np.linalg.norm(self.V)))))
 
-        # 4) Evaluate threshold & rupture
+        # 4) Threshold & rupture
         threshold_val = float(self._threshold_fn(self) if self._threshold_fn else self.Θ)
         ruptured = bool(delta_mag > threshold_val)
         self._last_symbol = "⚠" if ruptured else "⊙"
 
         if ruptured:
-            # Collapse policy
             if callable(self._collapse_fn):
                 try:
-                    # Adopt-R fast path for vectors if available
                     if self._collapse_fn is collapse_adopt_R and self._last_R_vec is not None:
                         Vp, Ep = np.asarray(self._last_R_vec, dtype=float), 0.0
                     else:
@@ -780,7 +774,6 @@ class EpistemicState:
             else:
                 Vp, Ep = collapse_reset(self, R_val)
 
-            # Update V, E — scalar and vector paths
             self.E = float(Ep)
             if isinstance(self.V, np.ndarray):
                 if isinstance(Vp, np.ndarray):
@@ -803,9 +796,8 @@ class EpistemicState:
                 "S̄": float(S_bar),
             })
             self._trigger("on_rupture")
-            # Track real re-stabilization time
             self._since_last_rupture = 0
-            time_to_realign = 0.0
+            time_to_realign: Optional[float] = 0.0
 
         else:
             # Realign policy
@@ -818,30 +810,26 @@ class EpistemicState:
                 else:
                     self.V = float(realign_linear(self, R_val, delta_mag))
             else:
-                # Vector realignment: move V toward R with bounded step
                 V_vec = np.asarray(self.V, dtype=float)
                 assert R_vec is not None
-                step = self.k * (R_vec - V_vec) * (1.0 + self.E)  # type: ignore
-                # Cap step by norm
+                step = float(self.k) * (R_vec - V_vec) * (1.0 + float(self.E))
                 norm_step = float(np.linalg.norm(step))
-                if norm_step > self.step_cap:
-                    step = step * (self.step_cap / norm_step)
+                if norm_step > float(self.step_cap):
+                    step = step * (float(self.step_cap) / norm_step)
                 self.V = (V_vec + step).astype(float)
 
-            # Misalignment memory update
-            self.E += 0.1 * delta_mag
-            self.E *= self.decay_rate
+            self.E += 0.1 * float(delta_mag)
+            self.E *= float(self.decay_rate)
 
-            # Real time-to-realign: count steps since last rupture until stable
             if self._since_last_rupture is not None:
                 self._since_last_rupture += 1
-                if delta_mag <= 0.5 * threshold_val:
+                if float(delta_mag) <= 0.5 * float(threshold_val):
                     time_to_realign = float(self._since_last_rupture)
                     self._since_last_rupture = None
                 else:
-                    time_to_realign = 1.0
+                    time_to_realign = None
             else:
-                time_to_realign = 1.0
+                time_to_realign = None
 
         # 5) Log step
         if self._log:
@@ -856,7 +844,7 @@ class EpistemicState:
                 "ruptured": bool(ruptured),
                 "symbol": self._last_symbol,
                 "source": source,
-                "time_to_realign": float(time_to_realign),
+                "time_to_realign": _finite(time_to_realign) if time_to_realign is not None else None,
             }
             self.history.append(log_entry)
             if self._max_history is not None and len(self.history) > self._max_history:
@@ -868,7 +856,7 @@ class EpistemicState:
             if len(self._rolling_drift) > 256:
                 self._rolling_drift.pop(0)
 
-        # 6) Advance time and tick meta-policy manager / evolution (if present)
+        # 6) Advance time and tick meta-policy manager / evolution
         self._time += 1
         if self.policy_manager and len(self.history) >= 12 and (self._time % 10 == 0):
             recent_evidence = [h["R"] for h in self.history[-20:]]
@@ -883,7 +871,6 @@ class EpistemicState:
             except Exception as e:
                 self._log_event("policy_manager_error", {"error": str(e)})
 
-            # Optional bounded evolution pass
             if hasattr(self.policy_manager, "evolve_if_due"):
                 try:
                     self.policy_manager.evolve_if_due(self, ctx, recent_evidence)  # type: ignore
@@ -901,20 +888,10 @@ class EpistemicState:
         rate: float = 1.0,
         margin: float = 1.02,
     ) -> None:
-        """
-        Wire the state's PolicyManager for bounded runtime evolution.
-
-        param_space: {"policy_id": {"param": ParamRange or (low, high, sigma)}}
-        every:       attempt evolution every N steps
-        rate:        mutation intensity multiplier
-        margin:      candidate must beat baseline by this factor to be promoted
-        """
         if not self.policy_manager:
             raise ValueError("Auto-evolution requires a PolicyManager on this state.")
         if hasattr(self.policy_manager, "set_param_space"):
-            # normalize tuples into ParamRange if needed
             try:
-                # Use manager's ParamRange
                 normalized: Dict[str, Dict[str, Any]] = {}
                 for pid, params in param_space.items():
                     normalized[pid] = {}
@@ -927,10 +904,8 @@ class EpistemicState:
                             normalized[pid][k] = v
                 self.policy_manager.set_param_space(normalized)  # type: ignore
             except Exception:
-                # fall back: pass through
                 self.policy_manager.set_param_space(param_space)  # type: ignore
 
-        # cadence & thresholds (only if manager exposes these knobs)
         for attr, val in (
             ("evolve_every", int(max(5, every))),
             ("evolve_rate", float(rate)),
@@ -939,9 +914,7 @@ class EpistemicState:
             if hasattr(self.policy_manager, attr):
                 setattr(self.policy_manager, attr, val)
 
-        self._log_event("auto_evolution_enabled", {
-            "every": int(every), "rate": float(rate), "margin": float(margin)
-        })
+        self._log_event("auto_evolution_enabled", {"every": int(every), "rate": float(rate), "margin": float(margin)})
 
     # -----------------------
     # Persistence helpers for policy memory
@@ -971,7 +944,7 @@ class EpistemicState:
         if not self.history:
             return None
         last = self.history[-1]
-        return float(last["∆"] - last["Θ"])
+        return float(last["∆"] - last["Θ"]) if last.get("∆") is not None and last.get("Θ") is not None else None
 
     def should_intervene(self, margin: float = 0.0) -> bool:
         risk = self.rupture_risk()
@@ -999,12 +972,10 @@ class EpistemicState:
 
     def realign(self, R: Evidence) -> None:
         R_val = self._resolve_reality(R)
-        # Manual adopt-R realign (safe)
         if isinstance(self.V, np.ndarray):
             if isinstance(R, (list, tuple, np.ndarray)):
                 self.V = np.asarray(R, dtype=float)
             else:
-                # keep direction; set magnitude to R_val
                 v = np.asarray(self.V, dtype=float)
                 n = _l2_norm(v)
                 self.V = (v / n) * R_val
@@ -1013,18 +984,20 @@ class EpistemicState:
         self.E *= 0.5
         self._last_symbol = "⊙"
         if self._log:
-            self.history.append({
-                "t": int(self._time),
-                "V": _sanitize(self.V),
-                "R": _sanitize(R),
-                "∆": 0.0,
-                "S̄": 0.0,
-                "Θ": float(self.Θ),
-                "E": float(self.E),
-                "ruptured": False,
-                "symbol": "⊙",
-                "source": "manual_realign",
-            })
+            self.history.append(
+                {
+                    "t": int(self._time),
+                    "V": _sanitize(self.V),
+                    "R": _sanitize(R),
+                    "∆": 0.0,
+                    "S̄": 0.0,
+                    "Θ": float(self.Θ),
+                    "E": float(self.E),
+                    "ruptured": False,
+                    "symbol": "⊙",
+                    "source": "manual_realign",
+                }
+            )
             if self._max_history is not None and len(self.history) > self._max_history:
                 self.history.pop(0)
         self._log_event("manual_realign", {"aligned_to": _sanitize(R)})
@@ -1045,11 +1018,7 @@ class EpistemicState:
         self._threshold_fn = threshold
         self._realign_fn = realign
         self._collapse_fn = collapse
-        self._log_event("policy_injected", {
-            "threshold": bool(threshold),
-            "realign": bool(realign),
-            "collapse": bool(collapse),
-        })
+        self._log_event("policy_injected", {"threshold": bool(threshold), "realign": bool(realign), "collapse": bool(collapse)})
 
     def bind_context(self, fn: Callable[..., Any]) -> None:
         if not callable(fn):
@@ -1108,7 +1077,7 @@ class EpistemicState:
         return self.meta_ruptures
 
     def drift_stats(self, window: int = 10) -> Dict[str, float]:
-        deltas = [step["∆"] for step in self.history[-int(window):] if "∆" in step]
+        deltas = [step["∆"] for step in self.history[-int(window) :] if "∆" in step]
         if not deltas:
             return {}
         arr = np.array(deltas, dtype=float)
@@ -1136,7 +1105,7 @@ class EpistemicState:
         try:
             safe_history = [{k: _sanitize(v) for k, v in entry.items()} for entry in self.history]
             with open(path, "w", encoding="utf-8") as f:
-                json.dump(safe_history, f, indent=2, ensure_ascii=False)
+                json.dump(safe_history, f, indent=2, ensure_ascii=False, allow_nan=False)
         except Exception as e:
             raise RuntimeError(f"Failed to export JSON log to {path}: {e}")
 
@@ -1166,15 +1135,9 @@ class EpistemicState:
         if details:
             for k, v in details.items():
                 sanitized[k] = _sanitize(v)
-        self.event_log.append({
-            "event": event_type,
-            "time": int(self._time),
-            "timestamp": _now_iso(),
-            "details": sanitized,
-        })
+        self.event_log.append({"event": event_type, "time": int(self._time), "timestamp": _now_iso(), "details": sanitized})
 
     def _resolve_reality(self, R: Evidence) -> float:
-        # For manual realign path and policy signatures needing scalar proxy
         if isinstance(R, (int, float, np.number)):
             return float(R)
         elif isinstance(R, (list, tuple)):
@@ -1189,6 +1152,7 @@ class EpistemicState:
             return float(np.linalg.norm(vec))
         else:
             raise ValueError("Reality must be float, list, ndarray, or dict (with Perception).")
+
 
 # ---------------------------
 # Preset safe specs (for immediate use with PolicyManager)
@@ -1207,7 +1171,7 @@ SAFE_SPECS: List[PolicySpec] = [
         threshold_fn=threshold_adaptive,
         realign_fn=realign_tanh,
         collapse_fn=collapse_soft_decay,
-        params={"k": 0.15, "a": 0.05, "note": "adaptive Θ and bounded ⊙"},
+        params={"k": 0.15, "a": 0.05, "cap": 1.0, "note": "adaptive Θ and bounded ⊙"},
     ),
     PolicySpec(
         "adoptive",
@@ -1218,37 +1182,28 @@ SAFE_SPECS: List[PolicySpec] = [
     ),
 ]
 
-# ---------------------------
-# Usage notes (informational, not executed)
-# ---------------------------
-"""
-Quickstart
-----------
-from cognize.epistemic import EpistemicState, PolicyManager, SAFE_SPECS
 
-state = EpistemicState(V0=0.0, threshold=0.35, realign_strength=0.3, rng_seed=42)
-pm = PolicyManager(SAFE_SPECS, cooldown_steps=30, rng=state.rng)  # share RNG for full determinism
-state.policy_manager = pm
-
-# Stream scalar evidence
-for r in [0.1, 0.2, 0.15, 0.9, 1.1, 0.95, 0.5, 0.4]:
-    state.receive(r, source="demo")
-
-print(state.explain_last())
-print(state.drift_stats(5))
-
-# Multimodal example with Perception
-enc_text = lambda t: np.ones(8) * len(t)  # toy embedding
-enc_img  = lambda i: np.ones(8) * 0.5     # toy image vec
-perception = Perception(text_encoder=enc_text, image_encoder=enc_img, normalize=True)
-
-state2 = EpistemicState(V0=np.zeros(8), perception=perception, rng_seed=123)
-state2.inject_policy(threshold=threshold_adaptive, realign=realign_tanh, collapse=collapse_soft_decay)
-state2.receive({"text": "hello", "image": object()}, source="demo-multi")
-
-# Enable bounded evolution (optional)
-pm.set_param_space({
-    "cautious": {"k": (0.05, 0.35, 0.02), "a": (0.01, 0.1, 0.01)}
-})
-state.enable_auto_evolution(param_space={"cautious": {"k": (0.05, 0.35)}}, every=50, rate=1.0, margin=1.02)
-"""
+__all__ = [
+    # core
+    "EpistemicState",
+    "PolicySpec",
+    "PolicyManager",
+    "PolicyMemory",
+    "ShadowRunner",
+    # primitives
+    "threshold_static",
+    "threshold_adaptive",
+    "threshold_stochastic",
+    "threshold_combined",
+    "realign_linear",
+    "realign_tanh",
+    "realign_decay_adaptive",
+    "collapse_reset",
+    "collapse_soft_decay",
+    "collapse_adopt_R",
+    "collapse_randomized",
+    "sbar_projection",
+    # helpers
+    "Perception",
+    "SAFE_SPECS",
+]
