@@ -20,7 +20,7 @@ from __future__ import annotations
 
 __author__ = "Pulikanti Sashi Bharadwaj"
 __license__ = "Apache-2.0"
-__version__ = "0.1.6"
+__version__ = "0.1.7"
 
 
 from dataclasses import dataclass, field
