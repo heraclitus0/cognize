@@ -8,7 +8,7 @@
 <p align="center">
   <a href="https://pypi.org/project/cognize"><img src="https://img.shields.io/pypi/v/cognize?color=blue&label=version" alt="PyPI version"></a>
   <img src="https://img.shields.io/badge/python-3.8+-blue">
-  <img src="https://img.shields.io/badge/status-beta-#9400d3">
+  <img src="https://img.shields.io/badge/status-beta-%9400d3">
   <img src="https://img.shields.io/badge/license-Apache%202.0-blue">
   <a href="https://pepy.tech/project/cognize"><img src="https://static.pepy.tech/badge/cognize" alt="Downloads"></a>
   <a href="https://doi.org/10.5281/zenodo.17042860"><img src="https://zenodo.org/badge/DOI/10.5281/zenodo.17042860.svg" alt="DOI"></a>
