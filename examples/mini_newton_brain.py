@@ -1,39 +1,41 @@
 import matplotlib.pyplot as plt
-from datetime import datetime
+from datetime import datetime, UTC
 from cognize import EpistemicState
 
-# --- 1) Conceptual policies (domain logic) ---
+# 1) Conceptual scalar policies
 def collapse_slow(belief, E):
-    """Small decay toward conservative prior, memory softens too."""
+    """Gentle reset: decay belief toward prior; soften memory."""
     return belief * 0.98, E * 0.90  # MUST return (V, E)
 
 def realign_gravity(belief, evidence, E):
-    """Move belief toward evidence; sensitivity increases with misalignment memory E."""
+    """Pull belief toward evidence; higher E => stronger pull."""
     alpha = 0.15 * (1 + 0.5 * min(E, 1.0))
     return belief + alpha * (evidence - belief)
 
-def adaptive_threshold(E, base=0.4):
-    """Conservative when memory is low; more sensitive after repeated mismatch."""
-    return base * (1 - 0.3 * min(E, 1.0))
+def adaptive_threshold(E, base=0.40):
+    """Lower Θ when memory is high (more sensitive after repeated mismatch)."""
+    return base * (1 - 0.30 * min(E, 1.0))
 
-# --- 2) Adapters to Cognize’s expected signatures ---
-# EpistemicState will call:
-#   threshold_fn(self) -> float Θ
-#   realign_fn(self, R, delta) -> new V
-#   collapse_fn(self) -> (new V, new E)
-collapse_slow_fn       = lambda self: collapse_slow(self.V, self.E)
-realign_gravity_fn     = lambda self, R, d: realign_gravity(self.V, R, self.E)
-adaptive_threshold_fn  = lambda self: adaptive_threshold(self.E)
+# 2) Adapt to Cognize’s expected signatures
+#    threshold(self) -> float Θ
+#    realign(self, R, delta) -> new V
+#    collapse(self, R) -> (new V, new E)   <-- NOTE: R is passed by Cognize
+def collapse_fn(self, R):
+    return collapse_slow(self.V, self.E)
 
-# --- 3) Create the epistemic agent (Newton brain) ---
-newton = EpistemicState(V0=0.2, threshold=0.4)  # initial weak belief
-newton.inject_policy(
-    collapse=collapse_slow_fn,
-    realign=realign_gravity_fn,
-    threshold=adaptive_threshold_fn
-)
+def realign_fn(self, R, d):
+    return realign_gravity(self.V, R, self.E)
 
-# --- 4) Sequence of observations (event, evidence in [0,1]) ---
+def threshold_fn(self):
+    return adaptive_threshold(self.E)
+
+# 3) Create agent
+newton = EpistemicState(V0=0.20, threshold=0.40)
+newton.inject_policy(threshold=threshold_fn,
+                     realign=realign_fn,
+                     collapse=collapse_fn)
+
+# 4) Evidence sequence
 observations = [
     ("apple_fall_small",   0.25),
     ("apple_fall_repeat",  0.30),
@@ -43,53 +45,56 @@ observations = [
     ("planet_orbit_calc",  0.92)   # consolidation
 ]
 
-# --- 5) Run simulation & collect trace using Cognize’s log for ground truth ---
+# 5) Run & trace
 trace = []
-for t, (evt, evidence) in enumerate(observations, start=1):
-    before = newton.V
-    newton.receive(evidence, source=evt)
-    last = newton.last() or {}
+for t, (evt, R) in enumerate(observations, start=1):
+    V_before = float(newton.V)
+    newton.receive(R, source=evt)
+    ev = newton.last() or {}
     row = {
         "t": t,
         "event": evt,
-        "evidence": float(last.get("R", evidence)),
-        "belief_before": float(before),
-        "belief_after": float(last.get("V", newton.V)),
-        "misalignment": float(last.get("∆", abs(evidence - before))),
-        "threshold": float(last.get("Θ", newton.Θ)),   # NOTE: property is Θ, not 'threshold'
+        "R": float(ev.get("R", R)),
+        "V_before": V_before,
+        "V_after": float(ev.get("V", newton.V)),
+        "Δ": float(ev.get("∆", abs(R - V_before))),
+        "Θ": float(ev.get("Θ", getattr(newton, "Θ", 0.0))),
         "E": float(getattr(newton, "E", 0.0)),
-        "rupture": bool(last.get("ruptured", False)),
-        "symbol": last.get("symbol", "⊙"),
-        "ts": datetime.utcnow().isoformat()
+        "rupture": bool(ev.get("rupture", ev.get("ruptured", False))),
+        "ts": datetime.now(UTC).isoformat(timespec="seconds"),
     }
     trace.append(row)
 
-# --- 6) Print a readable log ---
-print("\n--- Mini-Newton Brain Log ---")
+# 6) Readable log
+print("\n--- Mini-Newton Brain (scalar) ---")
+print("t  event                  R     V_before  V_after   Δ      Θ      E     rupture")
 for r in trace:
-    marker = "RUPTURE" if r["rupture"] else "•"
-    print(
-        f"[t={r['t']}] {r['event']}: "
-        f"R={r['evidence']:.2f}, "
-        f"V {r['belief_before']:.2f} → {r['belief_after']:.2f}, "
-        f"∆={r['misalignment']:.2f}, Θ={r['threshold']:.2f} {marker}"
-    )
+    print(f"{r['t']:>1}  {r['event']:<20}  {r['R']:.2f}  {r['V_before']:.2f}   "
+          f"{r['V_after']:.2f}  {r['Δ']:.2f}  {r['Θ']:.2f}  {r['E']:.2f}   "
+          f"{'YES' if r['rupture'] else 'no'}")
 
-# --- 7) Plot belief vs evidence with rupture markers ---
-times     = [r["t"] for r in trace]
-beliefs   = [r["belief_after"] for r in trace]
-evidences = [r["evidence"] for r in trace]
-rupts     = [r["t"] for r in trace if r["rupture"]]
+# 7) Plot: R vs V with rupture markers + E
+times = [r["t"] for r in trace]
+R_seq = [r["R"] for r in trace]
+V_seq = [r["V_after"] for r in trace]
+E_seq = [r["E"] for r in trace]
+rupts = [r["t"] for r in trace if r["rupture"]]
 
-plt.figure(figsize=(9, 4.5))
-plt.plot(times, beliefs,   marker="o", label="Belief V")
-plt.plot(times, evidences, marker="s", label="Evidence R")
+fig, ax = plt.subplots(2, 1, figsize=(10, 6.2), sharex=True)
+
+ax[0].plot(times, R_seq, marker="s", label="R (reality)")
+ax[0].plot(times, V_seq, marker="o", label="V (belief)")
 for rt in rupts:
-    plt.axvline(rt, linestyle="--", alpha=0.5)
-plt.xticks(times, [r["event"] for r in trace], rotation=20)
-plt.ylim(-0.05, 1.05)
-plt.ylabel("Value (0..1)")
-plt.title("Mini-Newton Brain: Belief vs Evidence — rupture lines marked")
-plt.legend()
+    ax[0].axvline(rt, linestyle="--", alpha=0.35)
+ax[0].set_ylabel("value")
+ax[0].set_title("Mini-Newton Brain — Reality vs Belief (ruptures dashed)")
+ax[0].legend()
+
+ax[1].plot(times, E_seq, marker=".", label="E (misalignment)")
+ax[1].set_ylabel("E")
+ax[1].set_xlabel("time / event index")
+ax[1].legend()
+
+plt.xticks(times, [r["event"] for r in trace], rotation=20, ha="right")
 plt.tight_layout()
 plt.show()
