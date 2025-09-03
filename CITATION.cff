@@ -1,5 +1,5 @@
 cff-version: 1.2.0
-message: "If you use Cognize in your research or applications, please cite it using the following metadata."
+message: "If you use Cognize in your research or applications, please cite it as below."
 title: "Cognize: Programmable cognition for Python systems"
 version: "0.1.7"
 doi: "10.5281/zenodo.17042860"
@@ -7,7 +7,7 @@ date-released: 2025-09-03
 authors:
   - family-names: "Pulikanti"
     given-names: "Sashi Bharadwaj"
-    orcid: "https://orcid.org/0009-0002-8904-2209"  
+    orcid: "https://orcid.org/0009-0002-8904-2209"
 repository-code: "https://github.com/heraclitus0/cognize"
 url: "https://pypi.org/project/cognize"
 license: "Apache-2.0"
@@ -15,6 +15,6 @@ abstract: >
   Cognize is a lightweight cognition engine for Python systems.
   It tracks a system’s belief (V) against reality (R), accumulates
   misalignment memory (E), and triggers rupture when drift exceeds
-  a threshold (Θ). It supports programmable thresholds, realignment,
+  a threshold (Theta). It supports programmable thresholds, realignment,
   and collapse logic — built for anomaly detection, drift-aware
   pipelines, cognitive agents, simulations, and metacognitive mechanics.
