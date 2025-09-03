@@ -157,9 +157,9 @@ from cognize import (
 If you use **Cognize**, please cite:
 
 ```bibtex
-@software{bharadwaj2025cognize,
+@software{pulikanti2025cognize,
   author       = {Pulikanti, Sashi Bharadwaj},
-  title        = {Cognize: Programmable cognition engine for Python systems},
+  title        = {heraclitus0/cognize: Cognize v0.1.7},
   year         = {2025},
   publisher    = {Zenodo},
   version      = {v0.1.7},
