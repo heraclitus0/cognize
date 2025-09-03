@@ -168,6 +168,8 @@ If you use **Cognize**, please cite:
 }
 ```
 
+Full citation formats (APA, MLA, etc.) are available via the DOI badge.
+
 ---
 
 ## License
