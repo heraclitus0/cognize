@@ -162,7 +162,7 @@ If you use **Cognize**, please cite:
   title        = {Cognize: Programmable cognition engine for Python systems},
   year         = {2025},
   publisher    = {Zenodo},
-  version      = {0.1.7},
+  version      = {v0.1.7},
   doi          = {10.5281/zenodo.17042860},
   url          = {https://doi.org/10.5281/zenodo.17042860}
 }
