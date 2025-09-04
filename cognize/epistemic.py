@@ -20,8 +20,7 @@ from __future__ import annotations
 
 __author__ = "Pulikanti Sashi Bharadwaj"
 __license__ = "Apache-2.0"
-__version__ = "0.1.7"
-
+__version__ = "0.1.8"
 
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
@@ -34,6 +33,14 @@ import uuid
 import math
 import warnings
 import numpy as np
+
+# Policy primitives (single source of truth)
+# - We only import what the kernel needs as defaults to avoid duplication.
+from .policies import (
+    threshold_static,   # default threshold when none is injected
+    realign_linear,     # default scalar realign when none is injected
+    collapse_reset,     # default collapse when none is injected
+)
 
 # Canonical perception adapter (single source of truth)
 from .perception import Perception  # re-exported below via __all__
@@ -94,116 +101,9 @@ def _sanitize(v: Any) -> Any:
     except Exception:
         return str(v)
 
-
 # ---------------------------
-# Default policy primitives (safe templates)
-# ---------------------------
-# Threshold policies Θ(E, t, context)
-
-def threshold_static(state: "EpistemicState") -> float:
-    """Constant threshold (baseline)."""
-    return float(state.Θ)
-
-
-def threshold_adaptive(state: "EpistemicState", a: float = 0.05, cap: float = 1.0) -> float:
-    """Θ_t = base + a * E ; bounded for stability."""
-    return float(state.Θ + _clip(a * float(state.E), 0.0, cap))
-
-
-def threshold_stochastic(state: "EpistemicState", sigma: float = 0.01) -> float:
-    """Adds Gaussian noise to baseline threshold using state's local RNG."""
-    sigma = _clip(float(sigma), 0.0, 0.2)
-    return float(state.Θ + float(state.rng.normal(0.0, sigma)))
-
-
-def threshold_combined(
-    state: "EpistemicState", a: float = 0.05, sigma: float = 0.01, cap: float = 1.0
-) -> float:
-    """Adaptive + stochastic threshold model."""
-    return float(
-        state.Θ
-        + _clip(a * float(state.E), 0.0, cap)
-        + float(state.rng.normal(0.0, _clip(sigma, 0.0, 0.2)))
-    )
-
-
-# Realignment ⊙(V, ∆, E, k) → V'
-
-def realign_linear(state: "EpistemicState", R_val: float, delta: float) -> float:
-    """Scalar path realigner. Vectors are handled in the kernel."""
-    step = float(state.k) * float(delta) * (1.0 + float(state.E))
-    step = _clip(step, -float(state.step_cap), float(state.step_cap))
-    sign = 1.0 if (float(R_val) - float(state.V)) >= 0.0 else -1.0
-    return float(float(state.V) + sign * step)
-
-
-def realign_tanh(state: "EpistemicState", R_val: float, delta: float) -> float:
-    """Smoothly saturating realignment; attenuates as delta grows; uses E via tanh."""
-    eps = float(state.epsilon) if float(state.epsilon) > 0 else 1e-6
-    gain = float(np.tanh(float(state.k) * float(delta))) * (1.0 + float(np.tanh(float(state.E) / eps)))
-    gain = _clip(gain, -float(state.step_cap), float(state.step_cap))
-    sign = 1.0 if (float(R_val) - float(state.V)) >= 0.0 else -1.0
-    return float(float(state.V) + sign * gain)
-
-
-def realign_decay_adaptive(state: "EpistemicState", R_val: float, delta: float) -> float:
-    """Gain decays with E: k_eff = k / (1+E); stabilizes when memory high."""
-    k_eff = _clip(float(state.k) / (1.0 + float(state.E)), 0.0, 1.0)
-    step = _clip(k_eff * float(delta), -float(state.step_cap), float(state.step_cap))
-    sign = 1.0 if (float(R_val) - float(state.V)) >= 0.0 else -1.0
-    return float(float(state.V) + sign * step)
-
-
-# Collapse policies (post-Θ): return (V', E')
-# Allow vector-aware V' by permitting Union[float, Vector]
-
-def collapse_reset(
-    state: "EpistemicState", R_val: Optional[float] = None
-) -> Tuple[Union[float, Vector], float]:
-    """Hard reset to zero; E cleared."""
-    if isinstance(state.V, np.ndarray):
-        return np.zeros_like(state.V, dtype=float), 0.0
-    return 0.0, 0.0
-
-
-def collapse_soft_decay(
-    state: "EpistemicState",
-    R_val: Optional[float] = None,
-    gamma: float = 0.5,
-    beta: float = 0.3,
-) -> Tuple[Union[float, Vector], float]:
-    """Partial decay of projection and memory."""
-    gamma = _clip(float(gamma), 0.0, 1.0)
-    beta = _clip(float(beta), 0.0, 1.0)
-    if isinstance(state.V, np.ndarray):
-        return np.asarray(state.V, dtype=float) * gamma, float(state.E) * beta
-    return float(state.V) * gamma, float(state.E) * beta
-
-
-def collapse_adopt_R(
-    state: "EpistemicState", R_val: Optional[float] = None
-) -> Tuple[Union[float, Vector], float]:
-    """
-    Adopt incoming reality as new projection; memory cleared.
-    Vector path: adopt last seen R_vec if available.
-    """
-    if isinstance(state.V, np.ndarray) and getattr(state, "_last_R_vec", None) is not None:
-        return np.asarray(state._last_R_vec, dtype=float), 0.0
-    rv = float(R_val if R_val is not None else (float(state.V) if not isinstance(state.V, np.ndarray) else 0.0))
-    return rv, 0.0
-
-
-def collapse_randomized(
-    state: "EpistemicState", R_val: Optional[float] = None, sigma: float = 0.1
-) -> Tuple[Union[float, Vector], float]:
-    """Collapse to a small random perturbation around 0; memory cleared."""
-    sig = _clip(float(sigma), 0.0, 1.0)
-    if isinstance(state.V, np.ndarray):
-        return state.rng.normal(0.0, sig, size=state.V.shape), 0.0
-    return float(state.rng.normal(0.0, sig)), 0.0
-
-
 # Divergence S̄ — vector-aware projection; fallback to directional scalar proxy
+# ---------------------------
 
 def sbar_projection(state: "EpistemicState", R_val: float) -> float:
     """
@@ -220,7 +120,6 @@ def sbar_projection(state: "EpistemicState", R_val: float) -> float:
     denom = 1.0 + abs(float(state.V)) if not isinstance(state.V, np.ndarray) else 1.0
     base = float(R_val - (float(state.V) if not isinstance(state.V, np.ndarray) else float(np.linalg.norm(state.V))))
     return float(base / denom)
-
 
 # ---------------------------
 # Meta-policy scaffolding (safe-by-construction)
@@ -307,7 +206,6 @@ class PolicyMemory:
         if len(self.records) > self.cap:
             self.records = self.records[-self.cap :]
 
-
 # Reward & Safety utilities
 
 def _default_reward(window: List[Dict[str, Any]]) -> float:
@@ -351,7 +249,6 @@ def _safety_flags(window: List[Dict[str, Any]]) -> Dict[str, Any]:
         runaway = bool(_np.all(diffs > 0.0) and Es[-1] > Es[0] * 1.2)
 
     return {"rupture_storm": bool(storm), "oscillation": bool(osc), "runaway_E": bool(runaway), "count": len(window)}
-
 
 class ShadowRunner:
     """Clone state → inject candidate policy → replay recent evidence → compute reward & safety flags."""
@@ -410,7 +307,6 @@ class ShadowRunner:
         r = self.reward_fn(window)
         flags = _safety_flags(window)
         return float(r), flags
-
 
 class PolicyManager:
     """
@@ -602,13 +498,12 @@ class PolicyManager:
             ctx_rec = dict(ctx); ctx_rec["bucket"] = bucket
             self.memory.remember(ctx_rec, cand, r_cand)
             PolicyManager._apply_params_to_state(state, cand.params or {})
-            state.inject_policy(**cand.fns())  # ensure functions of the promoted candidate are active
+            state.inject_policy(**cand.fns())
             self.last_promotion = {"id": cand.id, "reward": r_cand, "mutated_from": base.id, "step": step, "bucket": bucket}
             if hasattr(state, "_log_event"):
                 state._log_event("policy_mutation_promoted", self.last_promotion)
             return cand.id
         return None
-
 
 # ---------------------------
 # EpistemicState core
@@ -731,7 +626,7 @@ class EpistemicState:
         try:
             S_bar = float(self._divergence_fn(self, R_val))
         except Exception as e:
-            warnings.warn(f"Divergence function failed ({e}); using directional proxy.")
+            warnings.warn(f"Divergence function failed ({e}); using directional proxy).")
             S_bar = float((R_val - (float(self.V) if V_is_scalar else float(np.linalg.norm(self.V)))))
 
         # 4) Threshold & rupture
@@ -1193,35 +1088,6 @@ class EpistemicState:
         return clone
 
 
-# ---------------------------
-# Preset safe specs (for immediate use with PolicyManager)
-# ---------------------------
-
-SAFE_SPECS: List[PolicySpec] = [
-    PolicySpec(
-        "conservative",
-        threshold_fn=threshold_static,
-        realign_fn=realign_linear,
-        collapse_fn=collapse_soft_decay,
-        params={"k": 0.2, "note": "slow linear realign; soft decay on Θ"},
-    ),
-    PolicySpec(
-        "cautious",
-        threshold_fn=threshold_adaptive,
-        realign_fn=realign_tanh,
-        collapse_fn=collapse_soft_decay,
-        params={"k": 0.15, "a": 0.05, "cap": 1.0, "note": "adaptive Θ and bounded ⊙"},
-    ),
-    PolicySpec(
-        "adoptive",
-        threshold_fn=threshold_combined,
-        realign_fn=realign_decay_adaptive,
-        collapse_fn=collapse_adopt_R,
-        params={"k": 0.25, "a": 0.05, "sigma": 0.01, "note": "adopt-R under Θ"},
-    ),
-]
-
-
 __all__ = [
     # core
     "EpistemicState",
@@ -1229,20 +1095,8 @@ __all__ = [
     "PolicyManager",
     "PolicyMemory",
     "ShadowRunner",
-    # primitives
-    "threshold_static",
-    "threshold_adaptive",
-    "threshold_stochastic",
-    "threshold_combined",
-    "realign_linear",
-    "realign_tanh",
-    "realign_decay_adaptive",
-    "collapse_reset",
-    "collapse_soft_decay",
-    "collapse_adopt_R",
-    "collapse_randomized",
+    # divergence util kept in-kernel
     "sbar_projection",
     # helpers
     "Perception",  # re-export from cognize.perception
-    "SAFE_SPECS",
 ]
