@@ -3,7 +3,7 @@
 """
 cognize.policies
 ================
-Safe, ready-to-use policy functions for `EpistemicState`.
+Safe, ready-to-use policy functions for `EpistemicState` plus presets.
 
 Signatures
 ----------
@@ -19,7 +19,7 @@ Notes
 """
 
 from __future__ import annotations
-from typing import Dict, Callable, Tuple, Optional, Any
+from typing import Dict, Callable, Tuple, Optional, Any, List
 import numpy as np
 
 # ----------------------------------------------------------------------
@@ -37,9 +37,7 @@ def _nz_cap(x: float, floor: float = 1e-6) -> float:
     return float(max(float(x), float(floor)))
 
 def _signed_step(v: float, r: float, step: float, cap: float) -> float:
-    """
-    Apply a signed, bounded step from v toward r.
-    """
+    """Apply a signed, bounded step from v toward r."""
     sign = 1.0 if (float(r) - float(v)) >= 0.0 else -1.0
     step = _cap(step, -_nz_cap(cap), _nz_cap(cap))
     return float(v) + sign * float(step)
@@ -62,16 +60,12 @@ def threshold_adaptive(state, a: float = 0.05, cap: float = 1.0) -> float:
     return float(state.Θ + _cap(a * float(state.E), 0.0, cap))
 
 def threshold_stochastic(state, sigma: float = 0.01) -> float:
-    """
-    Add small Gaussian noise to Θ (deterministic via state's RNG).
-    """
+    """Add small Gaussian noise to Θ (deterministic via state's RNG)."""
     sigma = _cap(sigma, 0.0, 0.2)
     return float(state.Θ + float(_rng(state).normal(0.0, sigma)))
 
 def threshold_combined(state, a: float = 0.05, sigma: float = 0.01, cap: float = 1.0) -> float:
-    """
-    Adaptive + stochastic threshold, both bounded.
-    """
+    """Adaptive + stochastic threshold, both bounded."""
     a     = _cap(a,     0.0, 1.0)
     sigma = _cap(sigma, 0.0, 0.2)
     adapt = _cap(a * float(state.E), 0.0, cap)
@@ -97,18 +91,14 @@ def threshold_hysteresis(state, band: float = 0.10, refractory: int = 5) -> floa
 # ----------------------------------------------------------------------
 
 def realign_linear(state, R_val: float, delta: float) -> float:
-    """
-    Linear step toward R. Larger delta and memory E increase step size.
-    """
+    """Linear step toward R. Larger delta and memory E increase step size."""
     k    = _cap(getattr(state, "k", 0.3), 0.0, 2.0)
     step = k * float(delta) * (1.0 + float(state.E))
     cap  = _nz_cap(getattr(state, "step_cap", 1.0))
     return _signed_step(state.V, R_val, step, cap)
 
 def realign_tanh(state, R_val: float, delta: float) -> float:
-    """
-    Tanh-bounded step; saturates for large deltas. E enters via tanh(E/eps).
-    """
+    """Tanh-bounded step; saturates for large deltas. E enters via tanh(E/eps)."""
     k    = _cap(getattr(state, "k", 0.3), 0.0, 2.0)
     eps  = _nz_cap(getattr(state, "epsilon", 1e-3), 1e-9)
     gain = float(np.tanh(k * float(delta))) * (1.0 + float(np.tanh(float(state.E) / eps)))
@@ -116,18 +106,14 @@ def realign_tanh(state, R_val: float, delta: float) -> float:
     return _signed_step(state.V, R_val, gain, cap)
 
 def realign_bounded(state, R_val: float, delta: float, cap: float = 1.0) -> float:
-    """
-    Hard bound on per-step shift, independent of kernel cap (uses the tighter of the two).
-    """
+    """Hard cap on per-step shift, independent of kernel cap (use tighter of the two)."""
     k     = _cap(getattr(state, "k", 0.3), 0.0, 2.0)
     step  = k * float(delta) * (1.0 + float(state.E))
     cap   = _nz_cap(min(float(cap), float(getattr(state, "step_cap", 1.0))))
     return _signed_step(state.V, R_val, step, cap)
 
 def realign_decay_adaptive(state, R_val: float, delta: float) -> float:
-    """
-    Damp gain when memory E is high: k' = k / (1 + E).
-    """
+    """Damp gain when memory E is high: k' = k / (1 + E)."""
     k    = _cap(getattr(state, "k", 0.3) / (1.0 + float(state.E)), 0.0, 1.0)
     step = k * float(delta)
     cap  = _nz_cap(getattr(state, "step_cap", 1.0))
@@ -135,10 +121,10 @@ def realign_decay_adaptive(state, R_val: float, delta: float) -> float:
 
 def realign_antioscillatory(state, R_val: float, delta: float, alpha: float = 0.8) -> float:
     """
-    Anti-oscillation step: blend current step with an implicit momentum damp.
-    Uses last ∆ sign from state.history (if present) to reduce ping-pong near Θ.
+    Anti-oscillation step: blend current step with momentum damp.
+    Uses last ∆ sign from history (if present) to reduce ping-pong near Θ.
     """
-    alpha = _cap(alpha, 0.0, 1.0)  # smoothing
+    alpha = _cap(alpha, 0.0, 1.0)
     k     = _cap(getattr(state, "k", 0.3), 0.0, 2.0)
     base  = k * float(delta) * (1.0 + float(state.E))
 
@@ -147,12 +133,10 @@ def realign_antioscillatory(state, R_val: float, delta: float, alpha: float = 0.
     if hist and len(hist) >= 2:
         prev = hist[-2]
         prev_d = float(prev.get("∆", 0.0))
-        # If sign(prev (R-V)) differs from now, damp the step
-        if prev_d > 0 and (R_val - float(state.V)) < 0:
+        going_up = (R_val - float(state.V)) >= 0.0
+        if prev_d > 0 and not going_up:
             base *= (1.0 - 0.5 * alpha)
-        elif prev_d > 0 and (R_val - float(state.V)) >= 0:
-            base *= (1.0 + 0.0 * alpha)
-        elif prev_d <= 0 and (R_val - float(state.V)) >= 0:
+        elif prev_d <= 0 and going_up:
             base *= (1.0 - 0.5 * alpha)
 
     cap = _nz_cap(getattr(state, "step_cap", 1.0))
@@ -168,26 +152,19 @@ def collapse_reset(state, R_val: Optional[float] = None) -> Tuple[float, float]:
 
 def collapse_soft_decay(state, R_val: Optional[float] = None,
                         gamma: float = 0.5, beta: float = 0.3) -> Tuple[float, float]:
-    """
-    Conservative softening: V' = γ·V, E' = β·E (0 ≤ γ,β ≤ 1).
-    """
+    """Conservative softening: V' = γ·V, E' = β·E (0 ≤ γ,β ≤ 1)."""
     gamma = _cap(gamma, 0.0, 1.0)
     beta  = _cap(beta,  0.0, 1.0)
     return float(state.V) * gamma, float(state.E) * beta
 
 def collapse_adopt_R(state, R_val: Optional[float] = None) -> Tuple[float, float]:
-    """
-    Adopt incoming scalar R as new projection; memory cleared.
-    """
+    """Adopt incoming scalar R as new projection; memory cleared."""
     rv = float(R_val if R_val is not None else state.V)
     return rv, 0.0
 
 def collapse_adopt_inertia(state, R_val: Optional[float] = None,
                            eta: float = 0.5, beta: float = 0.2) -> Tuple[float, float]:
-    """
-    Partial adoption with inertia: V' = (1-η)·V + η·R, E' = β·E.
-    Useful when hard adoption causes downstream shocks.
-    """
+    """Partial adoption with inertia: V' = (1-η)·V + η·R, E' = β·E."""
     eta  = _cap(eta,  0.0, 1.0)
     beta = _cap(beta, 0.0, 1.0)
     rv   = float(R_val if R_val is not None else state.V)
@@ -196,9 +173,7 @@ def collapse_adopt_inertia(state, R_val: Optional[float] = None,
     return float(vnew), float(enew)
 
 def collapse_randomized(state, R_val: Optional[float] = None, sigma: float = 0.1) -> Tuple[float, float]:
-    """
-    Jump near zero with small noise; memory cleared. Deterministic via state's RNG.
-    """
+    """Jump near zero with small noise; memory cleared. Deterministic via state's RNG."""
     sigma = _cap(sigma, 0.0, 1.0)
     return float(_rng(state).normal(0.0, sigma)), 0.0
 
@@ -225,7 +200,7 @@ collapse_adopt_inertia_fn = lambda state, R=None: collapse_adopt_inertia(state, 
 collapse_randomized_fn    = lambda state, R=None: collapse_randomized(state, R)
 
 # ----------------------------------------------------------------------
-# Registry (nested + flat for ergonomic lookups across the codebase)
+# Registry (nested + flat for ergonomic lookups)
 # ----------------------------------------------------------------------
 
 POLICY_REGISTRY_NESTED: Dict[str, Dict[str, Callable[..., Any]]] = {
@@ -252,7 +227,7 @@ POLICY_REGISTRY_NESTED: Dict[str, Dict[str, Callable[..., Any]]] = {
     },
 }
 
-# Flat aliases for examples that call POLICY_REGISTRY["collapse_soft_decay"]
+# Flat aliases for convenience
 POLICY_REGISTRY_FLAT: Dict[str, Callable[..., Any]] = {
     # threshold
     "threshold_static":         threshold_static,
@@ -274,13 +249,109 @@ POLICY_REGISTRY_FLAT: Dict[str, Callable[..., Any]] = {
     "collapse_randomized":      collapse_randomized,
 }
 
-# Unified view: nested categories + flat convenience entries
+# Unified view: nested + flat
 POLICY_REGISTRY: Dict[str, Any] = {**POLICY_REGISTRY_FLAT, **POLICY_REGISTRY_NESTED}
-
-REGISTRY = POLICY_REGISTRY  # back-compat name some code may import
+REGISTRY = POLICY_REGISTRY  # back-compat
 
 # ----------------------------------------------------------------------
-# Legacy helpers (kept for third-party code; forward to the safe versions)
+# Safe preset PolicySpecs (plug-and-play for PolicyManager)
+# ----------------------------------------------------------------------
+
+try:
+    # Soft import to avoid hard coupling for simple users
+    from cognize.epistemic import PolicySpec  # type: ignore
+except Exception:
+    PolicySpec = None  # type: ignore
+
+def build_safe_specs(
+    *,
+    conservative_k: float = 0.20,
+    cautious_k: float = 0.15,
+    adoptive_k: float = 0.25,
+    theta_base: float = 0.35,
+    step_cap: float = 1.0,
+) -> List["PolicySpec"]:
+    """
+    Create a standard set of safe PolicySpec presets.
+    Returns [] if PolicySpec is unavailable.
+
+    Parameter names map to EpistemicState attributes (k, Θ, step_cap, ...)
+    or to policy kwargs (a, sigma, cap, gamma, beta). The kernel's
+    PolicyManager will apply state params and signature-bound policy kwargs.
+    """
+    if PolicySpec is None:
+        return []
+
+    conservative = PolicySpec(
+        id="conservative",
+        threshold_fn=threshold_static,
+        realign_fn=realign_linear,
+        collapse_fn=collapse_soft_decay,
+        params={
+            "k": float(np.clip(conservative_k, 0.05, 0.5)),
+            "Θ": float(theta_base),
+            "step_cap": float(step_cap),
+            "gamma": 0.6,  # collapse_soft_decay
+            "beta": 0.4,
+            "note": "slow linear realign; favors stability; soft decay on Θ",
+        },
+    )
+
+    cautious = PolicySpec(
+        id="cautious",
+        threshold_fn=threshold_adaptive,
+        realign_fn=realign_tanh,
+        collapse_fn=collapse_soft_decay,
+        params={
+            "k": float(np.clip(cautious_k, 0.05, 0.5)),
+            "Θ": float(theta_base),
+            "step_cap": float(step_cap),
+            "a": 0.05,      # threshold_adaptive
+            "cap": 1.0,     # threshold_adaptive cap
+            "gamma": 0.55,  # collapse_soft_decay
+            "beta": 0.35,
+            "note": "adaptive Θ and bounded ⊙; balanced drift handling",
+        },
+    )
+
+    adoptive = PolicySpec(
+        id="adoptive",
+        threshold_fn=threshold_combined,
+        realign_fn=realign_decay_adaptive,
+        collapse_fn=collapse_adopt_R,
+        params={
+            "k": float(np.clip(adoptive_k, 0.1, 0.6)),
+            "Θ": float(theta_base),
+            "step_cap": float(step_cap),
+            "a": 0.05,      # threshold_combined
+            "sigma": 0.01,  # threshold_combined
+            "note": "embraces regime shifts under Θ by adopting R; E-damped gain",
+        },
+    )
+
+    turbulent = PolicySpec(
+        id="turbulent",
+        threshold_fn=threshold_hysteresis,     # slightly more conservative after Θ
+        realign_fn=realign_bounded,
+        collapse_fn=collapse_randomized,
+        params={
+            "k": float(np.clip(adoptive_k, 0.15, 0.8)),
+            "Θ": float(theta_base),
+            "step_cap": float(step_cap),
+            "band": 0.10,   # threshold_hysteresis
+            "refractory": 5,
+            "cap": 0.6,     # realign_bounded cap
+            "note": "exploratory; caps ⊙ and uses hysteresis to avoid flip-flop",
+        },
+    )
+
+    return [conservative, cautious, adoptive, turbulent]
+
+# Ready-to-use presets
+SAFE_SPECS: List["PolicySpec"] = build_safe_specs()
+
+# ----------------------------------------------------------------------
+# Legacy helpers (for third-party code; forward to the safe versions)
 # ----------------------------------------------------------------------
 
 def _collapse_reset_legacy(R, V, E):                                     return 0.0, 0.0
@@ -301,15 +372,23 @@ def _threshold_combined_legacy(E, t, base=0.35, a=0.05, sigma=0.01):
 
 __all__ = [
     # thresholds
-    "threshold_static", "threshold_adaptive", "threshold_stochastic", "threshold_combined", "threshold_hysteresis",
+    "threshold_static", "threshold_adaptive", "threshold_stochastic",
+    "threshold_combined", "threshold_hysteresis",
     # realign
-    "realign_linear", "realign_tanh", "realign_bounded", "realign_decay_adaptive", "realign_antioscillatory",
+    "realign_linear", "realign_tanh", "realign_bounded",
+    "realign_decay_adaptive", "realign_antioscillatory",
     # collapse
-    "collapse_reset", "collapse_soft_decay", "collapse_adopt_R", "collapse_adopt_inertia", "collapse_randomized",
+    "collapse_reset", "collapse_soft_decay", "collapse_adopt_R",
+    "collapse_adopt_inertia", "collapse_randomized",
     # registries
     "POLICY_REGISTRY", "POLICY_REGISTRY_NESTED", "POLICY_REGISTRY_FLAT", "REGISTRY",
-    # injectable wrappers (explicit names used by examples)
-    "threshold_static_fn", "threshold_adaptive_fn", "threshold_stochastic_fn", "threshold_combined_fn", "threshold_hysteresis_fn",
-    "realign_linear_fn", "realign_tanh_fn", "realign_bounded_fn", "realign_decay_adaptive_fn", "realign_antioscillatory_fn",
-    "collapse_reset_fn", "collapse_soft_decay_fn", "collapse_adopt_R_fn", "collapse_adopt_inertia_fn", "collapse_randomized_fn",
+    # injectable wrappers
+    "threshold_static_fn", "threshold_adaptive_fn", "threshold_stochastic_fn",
+    "threshold_combined_fn", "threshold_hysteresis_fn",
+    "realign_linear_fn", "realign_tanh_fn", "realign_bounded_fn",
+    "realign_decay_adaptive_fn", "realign_antioscillatory_fn",
+    "collapse_reset_fn", "collapse_soft_decay_fn", "collapse_adopt_R_fn",
+    "collapse_adopt_inertia_fn", "collapse_randomized_fn",
+    # presets
+    "build_safe_specs", "SAFE_SPECS",
 ]
