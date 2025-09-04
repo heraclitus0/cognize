@@ -555,7 +555,7 @@ class EpistemicGraph:
                 for src, nbrs in self.edges.items()
             },
         }
-        with open(path, "w", encoding="utf-8") as f):
+        with open(path, "w", encoding="utf-8") as f:
             json.dump(payload, f, indent=2, ensure_ascii=False)
 
     def load_graph(self, path: str) -> None:
