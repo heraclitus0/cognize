@@ -12,6 +12,8 @@ Why this file exists
   (they live in `cognize.epistemic`).
 - Provide a lightweight ParamRange/ParamSpace helper for bounded evolution and a
   convenience adapter to wire it into the kernel's EpistemicState.
+- Optional *dynamic* (non-static) bounds via a provider that computes ranges from live context,
+  without modifying kernel code.
 
 Public API
 ----------
@@ -19,14 +21,15 @@ Public API
     PolicySpec, PolicyMemory, ShadowRunner, PolicyManager, EpistemicState
 - Bounds DSL:
     ParamRange, ParamSpace
-- Helper:
+- Helpers:
     enable_evolution(state, space, every=30, rate=1.0, margin=1.02)
+    enable_dynamic_evolution(state, provider, every=None, rate=None, margin=None)
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, Optional, Any
+from typing import Any, Dict, Optional, Callable, Mapping, Union
 
 # Single-source the core types from the kernel (no duplication here)
 from .epistemic import (
@@ -149,6 +152,93 @@ def enable_evolution(
     state.enable_auto_evolution(space.to_kernel(), every=every, rate=rate, margin=margin)
 
 
+# ---------------------------------------------------------------------
+# Dynamic evolution (non-static ranges, provider-driven)
+# ---------------------------------------------------------------------
+
+# Types accepted from providers
+ParamLike = Union[ParamRange, tuple]  # (low, high[, sigma]) allowed
+KernelSpace = Dict[str, Dict[str, Any]]
+ParamProvider = Callable[[EpistemicState, Dict[str, Any]], Mapping[str, Mapping[str, ParamLike]]]
+# provider must return: {policy_id: {param_name: ParamRange | (low, high[, sigma])}}
+
+def _to_kernel_space(space_map: Mapping[str, Mapping[str, ParamLike]]) -> KernelSpace:
+    """
+    Normalize provider output to the shape accepted by PolicyManager.set_param_space.
+    - ParamRange → (low, high, sigma)
+    - tuple      → passthrough (2 or 3 length)
+    - other      → constant/advisory passthrough
+    """
+    out: KernelSpace = {}
+    for pid, params in (space_map or {}).items():
+        out[pid] = {}
+        for k, v in (params or {}).items():
+            if isinstance(v, ParamRange):
+                out[pid][k] = v.as_tuple()
+            elif isinstance(v, tuple) and (2 <= len(v) <= 3):
+                out[pid][k] = v
+            else:
+                out[pid][k] = v
+    return out
+
+
+def enable_dynamic_evolution(
+    state: EpistemicState,
+    provider: ParamProvider,
+    *,
+    every: Optional[int] = None,
+    rate: Optional[float] = None,
+    margin: Optional[float] = None,
+) -> None:
+    """
+    Make evolution bounds dynamic by recomputing param ranges on-the-fly, driven by `provider`.
+    This wraps the PolicyManager's evolve_if_due at runtime; it does NOT modify kernel code.
+
+    provider(state, ctx) -> {policy_id: {param: ParamRange | (low, high[, sigma])}}
+    ctx contains keys the kernel already builds (t, E, mean_drift_20, rupt_rate_20, domain?).
+
+    Optional overrides let you tweak cadence without modifying existing setup:
+      - every  → override PolicyManager.evolve_every (min 5)
+      - rate   → override PolicyManager.evolve_rate
+      - margin → override PolicyManager.evolve_margin
+    """
+    if not isinstance(state, EpistemicState):
+        raise TypeError("state must be an EpistemicState")
+    pm = getattr(state, "policy_manager", None)
+    if not isinstance(pm, PolicyManager):
+        raise ValueError("EpistemicState needs a PolicyManager attached.")
+
+    # Optionally tune cadence/margins (keep existing if None)
+    if every is not None and hasattr(pm, "evolve_every"):
+        pm.evolve_every = int(max(5, every))
+    if rate is not None and hasattr(pm, "evolve_rate"):
+        pm.evolve_rate = float(rate)
+    if margin is not None and hasattr(pm, "evolve_margin"):
+        pm.evolve_margin = float(max(1.0, margin))
+
+    # Idempotent install
+    if getattr(pm, "_dynamic_wrap_installed", False):
+        return
+
+    import types
+    _orig = pm.evolve_if_due
+
+    def _wrapped_evolve_if_due(self_pm: PolicyManager, st: EpistemicState, ctx: Dict[str, Any], recent):
+        try:
+            dynamic_space = provider(st, dict(ctx))
+            kernel_space = _to_kernel_space(dynamic_space)
+            # Push fresh bounds into manager without disturbing other settings
+            self_pm.set_param_space(kernel_space)
+        except Exception as e:
+            # Log but never break the step loop
+            if hasattr(st, "_log_event"):
+                st._log_event("dynamic_evolution_error", {"error": str(e)})
+        return _orig(st, ctx, recent)
+
+    pm.evolve_if_due = types.MethodType(_wrapped_evolve_if_due, pm)
+    pm._dynamic_wrap_installed = True
+
+
 __all__ = [
     # façaded kernel types (single source of truth)
     "PolicySpec",
@@ -156,9 +246,9 @@ __all__ = [
     "ShadowRunner",
     "PolicyManager",
     "EpistemicState",
-    # bounds DSL + helper
+    # bounds DSL + helpers
     "ParamRange",
     "ParamSpace",
     "enable_evolution",
+    "enable_dynamic_evolution",
 ]
-
