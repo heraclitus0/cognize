@@ -10,15 +10,15 @@ influence-aware graph.
 Highlights
 ----------
 - Deep telemetry: every applied edge influence is logged on the destination node
-  (`event_log`), plus per-edge counters for diagnostics and dashboards.
+  (`event_log`) and mirrored into a rolling graph-level cascade trace.
 - Determinism hooks: optional RNG to coordinate any stochastic decisions, aligned
   with the seeded RNG style used in `EpistemicState` / `PolicyManager`.
-- Safer vector nudging: prefers a node's own current direction before falling
-  back to source direction and, only last, a ones vector.
+- Safer vector nudging: prefers a node’s own recent R-direction, then its V̂,
+  then (normalized) ones; all nudges are step-capped.
 - Bounded & reversible policy nudges: transient stabilization via Θ↑ and k↓ with
-  **decaying bias**, logged and capped; no permanent policy mutation.
-- Utilities: adjacency export/import, cascade traces, graph-level stats, suspend
-  context, validation, replay, edge pruning.
+  decaying bias; logged and capped; no permanent policy mutation.
+- Utilities: adjacency export/import (topology only), cascade traces, graph stats,
+  suspend context, validation, replay, edge pruning.
 
 Public API
 ----------
@@ -43,6 +43,29 @@ Public API
   - replay(sequence_of_evidence_dicts)
   - predict_influence(src, dst, post=None, rupture=None, depth=1)
   - register_hook(event, fn)   # events: on_influence, on_link, on_unlink
+
+Quick start
+-----------
+from cognize.network import EpistemicGraph
+from cognize import EpistemicState
+
+g = EpistemicGraph(damping=0.6, max_depth=2, rupture_only_propagation=True)
+g.add("sensor_a", state=EpistemicState(threshold=0.35, realign_strength=0.25))
+g.add("model_b",  state=EpistemicState(threshold=0.40, realign_strength=0.20))
+
+g.link("sensor_a", "model_b", weight=0.9, mode="pressure", decay=0.9, cooldown=3)
+g.link("model_b",  "sensor_a", weight=0.2, mode="delta",    decay=0.9, cooldown=5)
+
+g.step("sensor_a", 0.8)
+g.step("model_b",  {"temp": 22})
+print(g.stats())
+print(g.top_edges(by="applied_ema"))
+print(g.last_cascade(5))
+
+Note on save/load
+-----------------
+save_graph()/load_graph() persist **only** adjacency (topology & edge meta), not node internals.
+Missing nodes are created with default EpistemicState(); re-attach your tuned states separately.
 """
 
 from __future__ import annotations
@@ -180,9 +203,17 @@ class EpistemicGraph:
         e = self.edges.get(src, {}).get(dst)
         if not e:
             raise KeyError(f"No edge {src}->{dst}")
-        for k in ("weight", "decay", "cooldown", "mode"):
-            if k in updates:
-                setattr(e, k, float(abs(updates[k])) if k == "weight" else (str(updates[k]) if k == "mode" else updates[k]))
+        if "mode" in updates:
+            mode = str(updates["mode"])
+            if mode not in ("pressure", "delta", "policy"):
+                raise ValueError("mode must be one of: 'pressure', 'delta', 'policy'")
+            e.mode = mode
+        if "weight" in updates:
+            e.weight = float(abs(updates["weight"]))
+        if "decay" in updates:
+            e.decay = float(updates["decay"])
+        if "cooldown" in updates:
+            e.cooldown = int(updates["cooldown"])
         try:
             meta = {"src": src, "dst": dst, **{k: updates[k] for k in updates if k in {"weight", "decay", "cooldown", "mode"}}}
             self.nodes[dst]._log_event("graph_edge_updated", meta)
@@ -201,8 +232,8 @@ class EpistemicGraph:
             self._emit("on_unlink", {"event": "edge_unlinked", "src": src, "dst": dst})
 
     def neighbors(self, src: str) -> Dict[str, Edge]:
-        """Return the adjacency map for `src`."""
-        return self.edges.get(src, {})
+        """Return a read-only snapshot of the adjacency map for `src`."""
+        return dict(self.edges.get(src, {}))  # avoid leaking internal mutables
 
     # ---- stepping ----
 
@@ -233,9 +264,13 @@ class EpistemicGraph:
             else:
                 self._propagate_from(name, depth=1, rupture=ruptured)
 
-        post["_osc_note"] = "flip" if ruptured != pre_ruptured else "steady"
+        # Do not mutate `post` fields; attach diagnostics under a namespaced key
+        meta = {"oscillation": ("flip" if ruptured != pre_ruptured else "steady")}
+        out = dict(post)
+        out["_graph_meta"] = meta
+
         self._t += 1
-        return post
+        return out
 
     def step_all(self, evidence: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
         """Batch step: process `{node_name: R}` for each item in `evidence`."""
@@ -363,15 +398,16 @@ class EpistemicGraph:
             if dst_R_vec is not None:
                 direction = dst_R_vec / (np.linalg.norm(dst_R_vec) or 1.0)
             else:
-                direction: Optional[np.ndarray]
-                direction = (v / (n_v or 1.0)) if n_v > 0 else None
-                if direction is None:
+                if n_v > 0:
+                    direction = v / n_v
+                else:
                     src_R = src_post.get("R")
                     if isinstance(src_R, (list, np.ndarray)):
                         rvec = np.asarray(src_R, dtype=float)
                         direction = rvec / (np.linalg.norm(rvec) or 1.0)
                     else:
-                        direction = np.ones_like(v)
+                        direction = np.ones_like(v, dtype=float)
+                        direction /= (np.linalg.norm(direction) or 1.0)  # normalize fallback
 
             step = direction * float(magnitude)
 
@@ -518,7 +554,10 @@ class EpistemicGraph:
             json.dump(payload, f, indent=2, ensure_ascii=False)
 
     def load_graph(self, path: str) -> None:
-        """Load adjacency/edge metadata from JSON. Nodes are created if missing."""
+        """
+        Load adjacency/edge metadata from JSON. Nodes are created if missing
+        with default EpistemicState(); node internals are NOT restored.
+        """
         with open(path, "r", encoding="utf-8") as f:
             payload = json.load(f)
         self.damping = float(payload.get("damping", self.damping))
@@ -588,6 +627,8 @@ class EpistemicGraph:
                     issues.append(f"negative cooldown on {src}->{dst}")
                 if e.weight < 0:
                     issues.append(f"negative weight on {src}->{dst}")
+                if e.mode not in ("pressure", "delta", "policy"):
+                    issues.append(f"invalid mode on {src}->{dst}: {e.mode}")
         return {"ok": len(issues) == 0, "issues": issues}
 
     def degree(self, name: Optional[str] = None) -> Any:
