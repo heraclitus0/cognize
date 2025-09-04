@@ -1054,4 +1054,4 @@ class EpistemicProgrammableGraph(EpistemicGraph):
             self._emit("on_influence", event)
 
             e.last_influence_t = dst_st.summary()["t"]
-            self._propagate_from(dst, depth + 1, rupture=bool(post_src.get("ruptured", False)))
+           self._propagate_from(dst, depth + 1, rupture=bool(post_src.get("ruptured", False)))
