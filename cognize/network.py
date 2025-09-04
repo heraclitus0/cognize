@@ -20,6 +20,12 @@ Highlights
 - Utilities: adjacency export/import (topology only), cascade traces, graph stats,
   suspend context, validation, replay, edge pruning.
 
+Programmable layer
+------------------
+- Fully injectable strategies (gate/influence/magnitude/target/nudge/damp)
+- Persistence by **reference**: strategy IDs + JSON-safe params are saved/loaded.
+  Callables are looked up via a module-level registry; code is never serialized.
+
 Public API
 ----------
 - class EpistemicGraph
@@ -45,11 +51,14 @@ Public API
   - register_hook(event, fn)   # events: on_influence, on_link, on_unlink
 
 - class EpistemicProgrammableGraph (subclass)
-  - set_default(name, fn)       # override graph-wide strategy
+  - set_default(name, fn)       # override graph-wide strategy defaults
   - set_position(name, x, y)    # optional node positions for distance-aware decay
   - link(..., gate_fn=..., influence_fn=..., magnitude_fn=..., target_fn=...,
-                 nudge_fn=..., damp_fn=..., target=..., resolve_channel=..., params={...})
+                 nudge_fn=..., damp_fn=..., target=..., resolve_channel=..., params={...},
+                 strategy_id="name@semver")
   - update_link(..., gate_fn=..., influence_fn=..., ...)  # hot-update callables/params
+  - save_graph(path, include_strategies=True)
+  - load_graph(path, *, strict_strategies=False)
 """
 
 from __future__ import annotations
@@ -66,7 +75,30 @@ __all__ = [
     "ProgrammableEdge",
     "EpistemicGraph",
     "EpistemicProgrammableGraph",
+    "register_strategy",
+    "get_strategy",
 ]
+
+# =============================================================================
+# Strategy registry (persist-by-reference for programmable graphs)
+# =============================================================================
+
+_STRATEGY_REGISTRY: Dict[str, Dict[str, Callable]] = {}
+
+def register_strategy(strategy_id: str, **fns: Callable) -> None:
+    """
+    Register a strategy bundle by ID. Only known keys are accepted:
+      gate_fn, influence_fn, magnitude_fn, target_fn, nudge_fn, damp_fn
+    """
+    allowed = {"gate_fn", "influence_fn", "magnitude_fn", "target_fn", "nudge_fn", "damp_fn"}
+    unknown = set(fns) - allowed
+    if unknown:
+        raise KeyError(f"Unknown strategy keys: {unknown}")
+    _STRATEGY_REGISTRY[strategy_id] = {k: v for k, v in fns.items() if v is not None}
+
+def get_strategy(strategy_id: str) -> Optional[Dict[str, Callable]]:
+    """Return strategy callables dict for an ID, or None if missing."""
+    return _STRATEGY_REGISTRY.get(strategy_id)
 
 # ---------------------------
 # Edge definition
@@ -97,7 +129,6 @@ class Edge:
             "applied_ema": float(self.applied_ema),
             "ema_alpha": float(self.ema_alpha),
         }
-
 
 # ---------------------------
 # Graph
@@ -553,6 +584,7 @@ class EpistemicGraph:
     def save_graph(self, path: str) -> None:
         """Persist only the adjacency/edge metadata to JSON (not node internals)."""
         payload = {
+            "graph_class": type(self).__name__,
             "damping": self.damping,
             "max_depth": self.max_depth,
             "max_step": self.max_step,
@@ -561,7 +593,9 @@ class EpistemicGraph:
             "softcap_k": self.softcap_k,
             "nodes": list(self.nodes.keys()),
             "edges": {
-                src: {dst: e.as_dict() for dst, e in nbrs.items()}
+                src: {
+                    dst: e.as_dict() for dst, e in nbrs.items()
+                }
                 for src, nbrs in self.edges.items()
             },
         }
@@ -765,7 +799,6 @@ class EpistemicGraph:
         # also mirror to graph event log
         self.event_log.append({"event": event, **payload})
 
-
 # ---------------------------
 # Context manager
 # ---------------------------
@@ -782,7 +815,6 @@ class _SuspendCtx:
 
     def __exit__(self, exc_type, exc, tb) -> None:
         self._g._suspended = self._prior
-
 
 # ======================================================================
 # Programmable layer (fully injectable, backward-compatible)
@@ -911,6 +943,8 @@ class ProgrammableEdge(Edge):
     target: Any = None
     resolve_channel: Optional[Callable[..., Optional[slice]]] = None
     dist_decay: Any = 0.0
+    # persistence by reference
+    strategy_id: Optional[str] = None
 
 # ---- Fully-injectable graph ----
 class EpistemicProgrammableGraph(EpistemicGraph):
@@ -944,11 +978,13 @@ class EpistemicProgrammableGraph(EpistemicGraph):
             target=plug.get("target", None),
             resolve_channel=plug.get("resolve_channel", None),
             dist_decay=plug.get("dist_decay", 0.0),
+            strategy_id=plug.get("strategy_id"),
         )
         self.edges[src][dst] = edge
         try:
             meta = {"src": src, "dst": dst, "mode": mode, "weight": float(abs(weight)),
-                    "decay": float(decay), "cooldown": int(cooldown), "plug": list(plug.keys())}
+                    "decay": float(decay), "cooldown": int(cooldown), "plug": list(plug.keys()),
+                    "strategy_id": edge.strategy_id}
             self.nodes[src]._log_event("graph_edge_linked", meta)
             self.nodes[dst]._log_event("graph_edge_linked", meta)
         except Exception:
@@ -969,7 +1005,7 @@ class EpistemicProgrammableGraph(EpistemicGraph):
             super().update_link(src, dst, **base_updates)
         # Then programmable fields
         for key in ("gate_fn", "influence_fn", "magnitude_fn", "target_fn", "nudge_fn", "damp_fn",
-                    "target", "resolve_channel", "dist_decay"):
+                    "target", "resolve_channel", "dist_decay", "strategy_id"):
             if key in updates:
                 setattr(e, key, updates[key])
         if "params" in updates and isinstance(updates["params"], dict):
@@ -1038,7 +1074,7 @@ class EpistemicProgrammableGraph(EpistemicGraph):
             event = {
                 "t": self._t, "src": src, "dst": dst, "depth": depth, "mode": e.mode,
                 "base": base, "magnitude": mag, "applied": applied, "target": e.target,
-                "params": e.params,
+                "params": e.params, "strategy_id": e.strategy_id,
             }
             self._record_cascade(event)
             try:
@@ -1054,4 +1090,106 @@ class EpistemicProgrammableGraph(EpistemicGraph):
             self._emit("on_influence", event)
 
             e.last_influence_t = dst_st.summary()["t"]
-           self._propagate_from(dst, depth + 1, rupture=bool(post_src.get("ruptured", False)))
+            # Recurse to next hop
+            self._propagate_from(dst, depth + 1, rupture=bool(post_src.get("ruptured", False)))
+
+    # ---- Persistence overrides (include strategies by reference) ----
+
+    def save_graph(self, path: str, include_strategies: bool = True) -> None:
+        """
+        Persist adjacency/edge metadata to JSON. For programmable edges, also saves:
+          - strategy_id (string, if set)
+          - params (JSON-safe dict)
+          - target (JSON-safe; str/tuple/callable not serialized, only values)
+          - dist_decay (numeric; callables not serialized)
+        Callables are NOT serialized.
+        """
+        payload = {
+            "graph_class": type(self).__name__,
+            "damping": self.damping,
+            "max_depth": self.max_depth,
+            "max_step": self.max_step,
+            "rupture_only": self.rupture_only,
+            "softcap": self.softcap,
+            "softcap_k": self.softcap_k,
+            "nodes": list(self.nodes.keys()),
+            "edges": {},
+        }
+        for src, nbrs in self.edges.items():
+            payload["edges"][src] = {}
+            for dst, e in nbrs.items():
+                base = e.as_dict()
+                if include_strategies and isinstance(e, ProgrammableEdge):
+                    base.update({
+                        "strategy_id": e.strategy_id,
+                        "params": dict(e.params or {}),
+                        "target": e.target,
+                        "dist_decay": e.dist_decay,
+                    })
+                payload["edges"][src][dst] = base
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2, ensure_ascii=False)
+
+    def load_graph(self, path: str, *, strict_strategies: bool = False) -> None:
+        """
+        Load adjacency/edge metadata from JSON. Rebinds programmable strategies by ID.
+        If a strategy is missing:
+          - strict_strategies=True -> raises KeyError
+          - else -> falls back to defaults and logs 'graph_strategy_missing'
+        """
+        with open(path, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+        self.damping = float(payload.get("damping", self.damping))
+        self.max_depth = int(payload.get("max_depth", self.max_depth))
+        self.max_step = float(payload.get("max_step", self.max_step))
+        self.rupture_only = bool(payload.get("rupture_only", self.rupture_only))
+        self.softcap = payload.get("softcap", self.softcap)
+        self.softcap_k = float(payload.get("softcap_k", self.softcap_k))
+
+        # Ensure nodes exist
+        for name in payload.get("nodes", []):
+            if name not in self.nodes:
+                self.add(name)
+
+        # Rebuild edges
+        self.edges = {src: {} for src in self.nodes.keys()}
+        for src, nbrs in payload.get("edges", {}).items():
+            if src not in self.nodes:
+                continue
+            for dst, meta in nbrs.items():
+                if dst not in self.nodes:
+                    self.add(dst)
+                e = ProgrammableEdge(
+                    weight=float(abs(meta.get("weight", 0.5))),
+                    mode=str(meta.get("mode", "pressure")),
+                    decay=float(meta.get("decay", 0.85)),
+                    cooldown=int(meta.get("cooldown", 5)),
+                    params=dict(meta.get("params", {})),
+                    target=meta.get("target", None),
+                    dist_decay=meta.get("dist_decay", 0.0),
+                    strategy_id=meta.get("strategy_id"),
+                )
+                # counters
+                e.last_influence_t = int(meta.get("last_influence_t", -999_999))
+                e.hits = int(meta.get("hits", 0))
+                e.applied_sum = float(meta.get("applied_sum", 0.0))
+                e.applied_ema = float(meta.get("applied_ema", 0.0))
+                e.ema_alpha = float(meta.get("ema_alpha", 0.2))
+
+                # Rebind callables from registry if strategy_id present
+                sid = e.strategy_id
+                if sid:
+                    fns = get_strategy(sid)
+                    if not fns and strict_strategies:
+                        raise KeyError(f"Missing strategy '{sid}' in registry.")
+                    if fns:
+                        for k, fn in fns.items():
+                            setattr(e, k, fn)
+                    else:
+                        # Loud but non-fatal
+                        try:
+                            self.nodes[dst]._log_event("graph_strategy_missing", {"edge": f"{src}->{dst}", "strategy_id": sid})
+                        except Exception:
+                            pass
+
+                self.edges[src][dst] = e
