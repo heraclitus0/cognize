@@ -44,34 +44,39 @@ Public API
   - predict_influence(src, dst, post=None, rupture=None, depth=1)
   - register_hook(event, fn)   # events: on_influence, on_link, on_unlink
 
+- class EpistemicProgrammableGraph (new; subclass of EpistemicGraph)
+  - set_default(name, fn)       # override graph-wide strategy
+  - set_position(name, x, y)    # optional node positions for distance-aware decay
+  - link(..., gate_fn=..., influence_fn=..., magnitude_fn=..., target_fn=...,
+                 nudge_fn=..., damp_fn=..., target=..., resolve_channel=..., params={...})
+
 Quick start
 -----------
-from cognize.network import EpistemicGraph
+from cognize.network import EpistemicProgrammableGraph
 from cognize import EpistemicState
 
-g = EpistemicGraph(damping=0.6, max_depth=2, rupture_only_propagation=True)
+g = EpistemicProgrammableGraph(damping=0.6, max_depth=2, rupture_only_propagation=True)
 g.add("sensor_a", state=EpistemicState(threshold=0.35, realign_strength=0.25))
 g.add("model_b",  state=EpistemicState(threshold=0.40, realign_strength=0.20))
 
-g.link("sensor_a", "model_b", weight=0.9, mode="pressure", decay=0.9, cooldown=3)
-g.link("model_b",  "sensor_a", weight=0.2, mode="delta",    decay=0.9, cooldown=5)
+# plug a custom gate and magnitude, keep others default
+g.link("sensor_a","model_b", weight=0.9, mode="pressure", decay=0.9, cooldown=3,
+       gate_fn=lambda src_st,dst_st,ctx: bool(ctx["post_src"].get("ruptured", False)),
+       magnitude_fn=lambda base, edge, dst_st, ctx: min(
+           ctx["graph"].max_step,
+           ctx["graph"].damping * edge["weight"] * base / max(1, ctx["depth"])
+       ))
 
 g.step("sensor_a", 0.8)
 g.step("model_b",  {"temp": 22})
 print(g.stats())
-print(g.top_edges(by="applied_ema"))
 print(g.last_cascade(5))
-
-Note on save/load
------------------
-save_graph()/load_graph() persist **only** adjacency (topology & edge meta), not node internals.
-Missing nodes are created with default EpistemicState(); re-attach your tuned states separately.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Callable, Dict, Iterable, Optional, List, Any, Tuple
+from dataclasses import dataclass, field
+from typing import Callable, Dict, Iterable, Optional, List, Any, Tuple, Protocol, Union
 import json
 import numpy as np
 
@@ -550,7 +555,7 @@ class EpistemicGraph:
                 for src, nbrs in self.edges.items()
             },
         }
-        with open(path, "w", encoding="utf-8") as f:
+        with open(path, "w", encoding="utf-8") as f):
             json.dump(payload, f, indent=2, ensure_ascii=False)
 
     def load_graph(self, path: str) -> None:
@@ -760,3 +765,246 @@ class _SuspendCtx:
 
     def __exit__(self, exc_type, exc, tb) -> None:
         self._g._suspended = self._prior
+
+
+# ======================================================================
+# Programmable layer (fully injectable, backward-compatible)
+# ======================================================================
+
+VectorLike = Union[List[float], np.ndarray]
+
+# ---- Strategy Protocols (APIs you can implement) ----
+class GateFn(Protocol):
+    def __call__(self, src_st: EpistemicState, dst_st: EpistemicState, ctx: Dict[str, Any]) -> bool: ...
+
+class InfluenceFn(Protocol):
+    def __call__(self, src_st: EpistemicState, post_src: Dict[str, Any], ctx: Dict[str, Any]) -> float: ...
+
+class MagnitudeFn(Protocol):
+    def __call__(self, base: float, edge_meta: Dict[str, Any], dst_st: EpistemicState, ctx: Dict[str, Any]) -> float: ...
+
+class TargetFn(Protocol):
+    def __call__(self, dst_st: EpistemicState, edge_meta: Dict[str, Any], ctx: Dict[str, Any]) -> Optional[slice]: ...
+
+class NudgeFn(Protocol):
+    def __call__(self, dst_st: EpistemicState, magnitude: float, post_src: Dict[str, Any],
+                 target: Optional[slice], ctx: Dict[str, Any]) -> float: ...
+
+class DampFn(Protocol):
+    def __call__(self, dst_st: EpistemicState, ctx: Dict[str, Any]) -> float: ...
+
+# ---- Default strategies (mirror current behavior) ----
+def _default_gate(src_st: EpistemicState, dst_st: EpistemicState, ctx: Dict[str, Any]) -> bool:
+    mode = ctx["edge"]["mode"]
+    rupt = bool(ctx["post_src"].get("ruptured", False))
+    return (mode != "pressure" and mode != "policy") or rupt
+
+def _default_influence(src_st: EpistemicState, post_src: Dict[str, Any], ctx: Dict[str, Any]) -> float:
+    mode = ctx["edge"]["mode"]
+    delta = float(post_src.get("∆", 0.0))
+    theta = float(post_src.get("Θ", 0.0))
+    pressure = max(0.0, delta - theta)
+    if mode == "pressure": return pressure
+    if mode == "delta":    return delta * 0.25
+    if mode == "policy":   return pressure
+    return 0.0
+
+def _default_magnitude(base: float, edge_meta: Dict[str, Any], dst_st: EpistemicState, ctx: Dict[str, Any]) -> float:
+    g = ctx["graph"]
+    depth = int(ctx["depth"])
+    mag = float(g.damping * edge_meta["weight"] * base * (edge_meta["decay"] ** max(0, depth - 1)))
+    # optional spatial/parametric distance decay
+    dist_decay = edge_meta.get("dist_decay", 0.0)
+    if callable(dist_decay):
+        mag *= float(dist_decay(ctx))
+    elif dist_decay and dist_decay > 0.0:
+        p = getattr(g, "_pos", {})
+        p1, p2 = p.get(ctx["src"]), p.get(ctx["dst"])
+        if p1 and p2:
+            dx, dy = (p1[0]-p2[0]), (p1[1]-p2[1]); dist = float(np.hypot(dx, dy))
+            mag *= float(np.exp(-float(dist_decay) * dist))
+    node_cap = float(getattr(dst_st, "step_cap", g.max_step))
+    cap = float(min(g.max_step, max(1e-6, node_cap)))
+    return float(np.clip(mag, -cap, cap))
+
+def _default_target(dst_st: EpistemicState, edge_meta: Dict[str, Any], ctx: Dict[str, Any]) -> Optional[slice]:
+    # None => whole V. Tuple (i,j) => slice. Or resolver(name) via resolve_channel.
+    if not isinstance(dst_st.V, np.ndarray):
+        return None
+    t = edge_meta.get("target", None)
+    if t is None:
+        return slice(0, dst_st.V.shape[0])
+    if isinstance(t, tuple) and len(t) == 2:
+        i, j = int(t[0]), int(t[1])
+        i = max(0, min(i, dst_st.V.shape[0])); j = max(i, min(j, dst_st.V.shape[0]))
+        return slice(i, j)
+    res = edge_meta.get("resolve_channel")
+    if isinstance(t, str) and callable(res):
+        return res(dst_st, t, edge_meta, ctx)
+    if callable(t):
+        return t(dst_st, edge_meta, ctx)
+    return None
+
+def _default_damp(dst_st: EpistemicState, ctx: Dict[str, Any]) -> float:
+    g = ctx["graph"]
+    if hasattr(g, "_oscillation_factor"):
+        return float(g._oscillation_factor(dst_st))
+    return 1.0
+
+def _default_nudge(dst_st: EpistemicState, magnitude: float, post_src: Dict[str, Any],
+                   target: Optional[slice], ctx: Dict[str, Any]) -> float:
+    g = ctx["graph"]
+    if isinstance(dst_st.V, np.ndarray) and target is not None:
+        v = np.asarray(dst_st.V, dtype=float); sub = v[target]
+        n_sub = float(np.linalg.norm(sub))
+        last = dst_st.last() or {}
+        R = last.get("R", None)
+        if isinstance(R, (list, np.ndarray)) and len(R) == len(v):
+            r_sub = np.asarray(R, dtype=float)[target]
+            direction = r_sub / (np.linalg.norm(r_sub) or 1.0)
+        else:
+            direction = (sub / (n_sub or 1.0)) if n_sub > 0 else np.ones_like(sub)
+        step = direction * float(magnitude)
+        node_cap = float(getattr(dst_st, "step_cap", g.max_step))
+        cap = float(min(g.max_step, max(1e-6, node_cap)))
+        step_norm = float(np.linalg.norm(step))
+        if step_norm > cap:
+            step *= (cap / (step_norm or 1.0)); step_norm = cap
+        v[target] = (sub + step).astype(float); dst_st.V = v
+        return step_norm
+    # fallback to your scalar/whole-vector logic
+    return g._nudge_value_toward_recent_R(dst_st, magnitude, post_src)
+
+# ---- Programmable Edge ----
+@dataclass
+class ProgrammableEdge(Edge):
+    gate_fn: Optional[GateFn] = None
+    influence_fn: Optional[InfluenceFn] = None
+    magnitude_fn: Optional[MagnitudeFn] = None
+    target_fn: Optional[TargetFn] = None
+    nudge_fn: Optional[NudgeFn] = None
+    damp_fn: Optional[DampFn] = None
+    params: Dict[str, Any] = field(default_factory=dict)
+    # passthrough fields used by defaults
+    target: Any = None
+    resolve_channel: Optional[Callable[..., Optional[slice]]] = None
+    dist_decay: Any = 0.0
+
+# ---- Fully-injectable graph ----
+class EpistemicProgrammableGraph(EpistemicGraph):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.defaults: Dict[str, Callable] = {
+            "gate_fn":      _default_gate,
+            "influence_fn": _default_influence,
+            "magnitude_fn": _default_magnitude,
+            "target_fn":    _default_target,
+            "nudge_fn":     _default_nudge,
+            "damp_fn":      _default_damp,
+        }
+        self._pos: Dict[str, Tuple[float, float]] = {}
+        self.edges: Dict[str, Dict[str, ProgrammableEdge]] = {}
+
+    # Override to accept callables without breaking the original API
+    def link(self, src: str, dst: str, weight: float = 0.5, mode: str = "pressure",
+             decay: float = 0.85, cooldown: int = 5, **plug) -> None:
+        if src not in self.nodes or dst not in self.nodes:
+            raise KeyError("Both src and dst must exist in graph.")
+        if mode not in ("pressure", "delta", "policy"):
+            raise ValueError("mode must be one of: 'pressure', 'delta', 'policy'")
+        self.edges.setdefault(src, {})
+        edge = ProgrammableEdge(
+            weight=float(abs(weight)), mode=mode, decay=float(decay), cooldown=int(cooldown),
+            gate_fn=plug.get("gate_fn"), influence_fn=plug.get("influence_fn"),
+            magnitude_fn=plug.get("magnitude_fn"), target_fn=plug.get("target_fn"),
+            nudge_fn=plug.get("nudge_fn"), damp_fn=plug.get("damp_fn"),
+            params=dict(plug.get("params", {})),
+            target=plug.get("target", None),
+            resolve_channel=plug.get("resolve_channel", None),
+            dist_decay=plug.get("dist_decay", 0.0),
+        )
+        self.edges[src][dst] = edge
+        try:
+            meta = {"src": src, "dst": dst, "mode": mode, "weight": float(abs(weight)),
+                    "decay": float(decay), "cooldown": int(cooldown), "plug": list(plug.keys())}
+            self.nodes[src]._log_event("graph_edge_linked", meta)
+            self.nodes[dst]._log_event("graph_edge_linked", meta)
+        except Exception:
+            pass
+        self._emit("on_link", {"event": "edge_linked", "src": src, "dst": dst, "mode": mode})
+
+    def neighbors(self, src: str) -> Dict[str, ProgrammableEdge]:
+        return dict(self.edges.get(src, {}))
+
+    # DI helpers
+    def set_default(self, name: str, fn: Callable) -> None:
+        if name not in self.defaults:
+            raise KeyError(f"Unknown default '{name}'")
+        self.defaults[name] = fn
+
+    def set_position(self, name: str, x: float, y: float) -> None:
+        self._pos[name] = (float(x), float(y))
+
+    # Core propagation using injected strategies
+    def _propagate_from(self, src: str, depth: int, rupture: bool) -> None:
+        if depth > self.max_depth:
+            return
+        post_src = self.nodes[src].last() or {}
+        for dst, e in self.neighbors(src).items():
+            dst_st = self.nodes[dst]
+            if (dst_st.summary()["t"] - e.last_influence_t) < e.cooldown:
+                continue
+
+            ctx = {
+                "graph": self, "src": src, "dst": dst, "depth": depth, "time": self._t,
+                "post_src": post_src,
+                "edge": {
+                    "mode": e.mode, "weight": e.weight, "decay": e.decay, "cooldown": e.cooldown,
+                    "target": e.target, "resolve_channel": e.resolve_channel, "dist_decay": e.dist_decay,
+                    "params": e.params,
+                },
+                "rng": self.graph_rng,
+            }
+
+            gate_fn = e.gate_fn or self.defaults["gate_fn"]
+            if not gate_fn(self.nodes[src], dst_st, ctx):
+                continue
+
+            influence_fn = e.influence_fn or self.defaults["influence_fn"]
+            base = float(influence_fn(self.nodes[src], post_src, ctx))
+            if base <= 0.0:
+                continue
+
+            damp_fn = e.damp_fn or self.defaults["damp_fn"]
+            damp = float(np.clip(damp_fn(dst_st, ctx), 0.0, 1.0))
+
+            magnitude_fn = e.magnitude_fn or self.defaults["magnitude_fn"]
+            mag = float(magnitude_fn(base, ctx["edge"], dst_st, ctx)) * damp
+            if mag == 0.0:
+                continue
+
+            target_fn = e.target_fn or self.defaults["target_fn"]
+            t_slice = target_fn(dst_st, ctx["edge"], ctx)
+
+            nudge_fn = e.nudge_fn or self.defaults["nudge_fn"]
+            applied = float(nudge_fn(dst_st, mag, post_src, t_slice, ctx))
+
+            if applied != 0.0:
+                e.hits += 1
+                e.applied_sum += abs(applied)
+                e.applied_ema = float(e.ema_alpha * abs(applied) + (1.0 - e.ema_alpha) * e.applied_ema)
+
+            event = {
+                "t": self._t, "src": src, "dst": dst, "depth": depth, "mode": e.mode,
+                "base": base, "magnitude": mag, "applied": applied, "target": e.target,
+                "params": e.params,
+            }
+            self._record_cascade(event)
+            try:
+                dst_st._log_event("graph_influence", event)
+            except Exception:
+                pass
+            self._emit("on_influence", event)
+
+            e.last_influence_t = dst_st.summary()["t"]
+            self._propagate_from(dst, depth + 1, rupture=bool(post_src.get("ruptured", False)))
