@@ -4,48 +4,36 @@
 cognize.perception
 ==================
 
-Perception Layer for Cognize
-----------------------------
-Converts raw multi-modal inputs (text, images, sensors) into a single,
-normalized evidence vector that an `EpistemicState` can consume.
+Perception — fuse text/image/sensor into one safe, normalized vector.
 
-Design goals
-------------
-- Pluggable encoders: bring your own text / image / sensor encoders.
-- Shape safety: vectors are float, 1-D, and aligned to a common dimension.
-- Weighted fusion: supports modality weights and per-sample confidences.
-- Deterministic normalization: L2 normalize (modalities + fused output) for Θ stability.
-- Telemetry hooks: optional lightweight introspection with `explain()`.
-- Batch-first: `process_batch([...])` to amortize encoder overhead.
-- Optional running calibration for sensor streams (EMA mean/var).
-- Optional LRU cache for **text** encodings (most common hot path).
-- **Pre-encoded passthrough**: accept a ready-made vector via key `"vec"`.
-- **Per-call weights**: optional `{"weights": {...}}` to override fusion weights.
-
-Compatibility
--------------
-- Interfaces align with `EpistemicState.receive(...)` (expects `.process(dict)->np.ndarray`).
-- Pure Python + NumPy only; no framework dependencies.
+Design
+------
+- Bring-your-own encoders (text / image / sensor) or pass a ready vector via "vec".
+- Shape-safe: 1-D float vectors, aligned to a common dim with pad/truncate (or strict).
+- Deterministic: optional L2-norm on each modality and on the fused output.
+- Weighted: static per-modality weights + per-sample confidences; per-call overrides.
+- Resilient: NaN/Inf sanitized; fusion fallback if a custom fusion_fn fails.
+- Calibrated: optional EMA mean/var for sensor streams.
+- Inspectable: `explain()` and lightweight `trace` buffer; pluggable hooks.
 
 Quick start
 -----------
 >>> import numpy as np
->>> def toy_text_encoder(s: str) -> np.ndarray:  # 4-dim toy embedding
-...     return np.array([len(s), s.count(' '), s.count('a'), 1.0], dtype=float)
->>> P = Perception(text_encoder=toy_text_encoder)
+>>> def toy_text(s: str) -> np.ndarray:
+...     return np.array([len(s), s.count(' '), s.count('a'), 1.0], float)
+>>> from cognize.perception import Perception, PerceptionConfig
+>>> P = Perception(text_encoder=toy_text, config=PerceptionConfig(trace=True))
 >>> v = P.process({"text": "hello world"})
->>> v.shape
-(4,)
->>> float(np.linalg.norm(v))  # L2-normalized by default
-1.0
+>>> v.shape, round(float(np.linalg.norm(v)), 5)
+((4,), 1.0)
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, Optional, Tuple, Sequence, List
+from typing import Any, Callable, Dict, Optional, Sequence, List
 import numpy as np
-from collections import OrderedDict
+from collections import OrderedDict, deque
 
 __all__ = [
     "PerceptionError",
@@ -64,8 +52,7 @@ FusionFn = Callable[[Dict[str, Vector], Dict[str, float]], Vector]
 # ---------------------------
 
 class PerceptionError(Exception):
-    """Unified error class for perception-related failures."""
-    pass
+    """Unified error for perception-related failures."""
 
 
 # ---------------------------
@@ -74,37 +61,40 @@ class PerceptionError(Exception):
 
 @dataclass
 class PerceptionConfig:
-    """Configuration for fusion & normalization."""
+    """Fusion & normalization configuration."""
     # Target embedding dimension; if None, inferred from first available vector
     target_dim: Optional[int] = None
     # Per-modality weights (multiplicative); missing keys default to 1.0
     weights: Dict[str, float] = field(default_factory=lambda: {
         "text": 1.0, "image": 1.0, "sensor": 1.0, "vec": 1.0
     })
-    # If true, L2-normalize each modality vector before fusion
+    # Normalize each modality vector before fusion
     norm_each: bool = True
-    # If true, L2-normalize the fused vector
+    # Normalize the fused vector
     norm_output: bool = True
-    # How to handle dim mismatch: "pad" with zeros or "truncate" to target_dim
-    dim_strategy: str = "pad"  # "pad" | "truncate"
-    # Small epsilon for numeric stability
+    # Dim mismatch handling: "pad" | "truncate"
+    dim_strategy: str = "pad"
+    # Numeric stability epsilon
     eps: float = 1e-9
-    # Optional: clip fused output to [-clip, clip] before final normalization (0 disables)
+    # Optional clip for fused output before final normalization (0 disables)
     clip_value: float = 0.0
-    # Optional running calibration for sensor vectors (before per-modality norm)
+    # Sensor EMA calibration
     use_calibration: bool = False
-    calib_alpha: float = 0.05  # EMA factor for mean/var
+    calib_alpha: float = 0.05
+    # If True, reject dimension mismatch instead of pad/truncate
+    strict_dim: bool = False
+    # Debug trace: keep last N processed items with aligned/fused vectors
+    trace: bool = False
+    trace_cap: int = 50
 
 
 # ---------------------------
 # Helpers
 # ---------------------------
 
-def _as_float_vec(x: Any) -> Vector:
-    v = np.asarray(x, dtype=float)
-    if v.ndim != 1:
-        v = v.reshape(-1)
-    # replace non-finite with 0 to keep kernels stable
+def _sanitize_vec(x: Any) -> Vector:
+    """Convert to 1-D float vector, replace non-finite with 0."""
+    v = np.asarray(x, dtype=float).reshape(-1)
     if not np.isfinite(v).all():
         v = np.where(np.isfinite(v), v, 0.0)
     return v
@@ -115,34 +105,30 @@ def _l2norm(v: Vector, eps: float) -> Vector:
     return v if n <= eps else (v / n)
 
 
-def _align_dim(v: Vector, target_dim: int, mode: str) -> Vector:
+def _align_dim(v: Vector, target_dim: int, mode: str, strict: bool) -> Vector:
     if v.shape[0] == target_dim:
         return v
+    if strict:
+        raise PerceptionError(f"dim mismatch: got {v.shape[0]}, expected {target_dim}")
     if mode == "pad":
-        if v.shape[0] < target_dim:
-            pad = np.zeros(target_dim - v.shape[0], dtype=float)
-            return np.concatenate([v, pad], axis=0)
-        else:
-            return v[:target_dim]
+        return np.pad(v, (0, max(0, target_dim - v.shape[0])), mode="constant")[:target_dim]
     if mode == "truncate":
         return v[:target_dim] if v.shape[0] >= target_dim else np.pad(v, (0, target_dim - v.shape[0]), mode="constant")
     raise PerceptionError("dim_strategy must be 'pad' or 'truncate'")
 
 
 def _default_fusion(vectors: Dict[str, Vector], weights: Dict[str, float]) -> Vector:
-    """Weighted mean of modality vectors (expects shape-aligned inputs)."""
+    """Weighted mean (expects shape-aligned vectors)."""
     if not vectors:
         raise PerceptionError("No vectors to fuse.")
-    W = []
-    V = []
+    V, W = [], []
     for k, v in vectors.items():
         w = float(weights.get(k, 1.0))
-        if w <= 0.0:
-            continue
-        W.append(w)
-        V.append(v * w)
+        if w > 0.0:
+            V.append(v * w)
+            W.append(w)
     if not V:
-        raise PerceptionError("All modality weights are zero or negative.")
+        raise PerceptionError("All modality weights are ≤ 0.")
     return np.sum(V, axis=0) / (np.sum(W) or 1.0)
 
 
@@ -159,14 +145,18 @@ class RunningCalibrator:
     var: Optional[Vector] = None
 
     def update(self, v: Vector) -> None:
-        v = _as_float_vec(v)
-        if self.mean is None:
-            self.mean = v.copy()
-            self.var = np.ones_like(v)
-            return
-        self.mean = (1 - self.alpha) * self.mean + self.alpha * v
-        diff = v - self.mean
-        self.var = (1 - self.alpha) * self.var + self.alpha * (diff * diff)
+        try:
+            v = _sanitize_vec(v)
+            if self.mean is None:
+                self.mean = v.copy()
+                self.var = np.ones_like(v)
+                return
+            self.mean = (1 - self.alpha) * self.mean + self.alpha * v
+            diff = v - self.mean
+            self.var = (1 - self.alpha) * self.var + self.alpha * (diff * diff)
+        except Exception:
+            # Fail closed: never propagate calibrator errors
+            pass
 
     def apply(self, v: Vector) -> Vector:
         if self.mean is None or self.var is None:
@@ -181,24 +171,11 @@ class RunningCalibrator:
 
 class Perception:
     """
-    Perception(text_encoder, image_encoder, sensor_fusion_fn, fusion_fn, config,
-               text_cache_size=0)
+    Perception(text_encoder=None, image_encoder=None, sensor_fusion_fn=None,
+               fusion_fn=None, config=None, text_cache_size=0)
 
-    Parameters
-    ----------
-    text_encoder : Callable[[str], np.ndarray], optional
-        Your text -> vector encoder (1-D).
-    image_encoder : Callable[[Any], np.ndarray], optional
-        Your image -> vector encoder (1-D).
-    sensor_fusion_fn : Callable[[Any], np.ndarray], optional
-        Your sensor(s) -> vector encoder (1-D).
-    fusion_fn : Callable[[Dict[str, Vector], Dict[str, float]], Vector], optional
-        Function that fuses aligned modality vectors into a single vector.
-        Defaults to a weighted mean.
-    config : PerceptionConfig, optional
-        Fusion/normalization configuration. If omitted, defaults are used.
-    text_cache_size : int
-        Size of LRU cache for text encodings (0 disables). Only affects `text_encoder`.
+    Encodes available modalities, aligns dims, applies weights/confidences,
+    fuses safely, and returns a single 1-D float vector.
     """
 
     def __init__(
@@ -216,18 +193,36 @@ class Perception:
         self.fusion_fn = fusion_fn or _default_fusion
         self.config = config or PerceptionConfig()
 
-        # optional calibrator for sensor streams
+        # Optional calibrator for sensor streams
         self._sensor_cal: Optional[RunningCalibrator] = (
             RunningCalibrator(self.config.calib_alpha) if self.config.use_calibration else None
         )
 
-        # simple LRU for text
+        # Simple LRU for text
         self._text_cache: Optional[OrderedDict[str, Vector]] = None
         self._text_cache_cap = max(0, int(text_cache_size))
         if self._text_cache_cap > 0:
             self._text_cache = OrderedDict()
 
-    # ---- internals ----
+        # Trace + hooks
+        self._trace = deque(maxlen=int(max(1, self.config.trace_cap))) if self.config.trace else None
+        self._hooks: Dict[str, List[Callable[[Dict[str, Any]], None]]] = {}
+
+    # ---- hooks ----
+
+    def register_hook(self, event: str, fn: Callable[[Dict[str, Any]], None]) -> None:
+        """Subscribe to 'on_process' or future events."""
+        self._hooks.setdefault(event, []).append(fn)
+
+    def _emit(self, event: str, payload: Dict[str, Any]) -> None:
+        for fn in self._hooks.get(event, []):
+            try:
+                fn(dict(payload))
+            except Exception:
+                # Hooks must never destabilize the pipeline
+                pass
+
+    # ---- encoders ----
 
     def _encode_text(self, s: Any) -> Optional[Vector]:
         enc = self.text_encoder
@@ -237,16 +232,17 @@ class Perception:
         if self._text_cache is not None:
             v = self._text_cache.get(s)
             if v is not None:
-                # move to end (recently used)
+                # Move to MRU
                 self._text_cache.move_to_end(s)
                 return v.copy()
         try:
-            v = _as_float_vec(enc(s))
+            v = _sanitize_vec(enc(s))
         except Exception as e:
             raise PerceptionError(f"text_encoder failed: {e}")
         if self._text_cache is not None:
             self._text_cache[s] = v.copy()
             if len(self._text_cache) > self._text_cache_cap:
+                # Pop LRU
                 self._text_cache.popitem(last=False)
         return v
 
@@ -255,7 +251,7 @@ class Perception:
         if enc is None or img is None:
             return None
         try:
-            return _as_float_vec(enc(img))
+            return _sanitize_vec(enc(img))
         except Exception as e:
             raise PerceptionError(f"image_encoder failed: {e}")
 
@@ -264,7 +260,7 @@ class Perception:
         if enc is None or sensor_obj is None:
             return None
         try:
-            v = _as_float_vec(enc(sensor_obj))
+            v = _sanitize_vec(enc(sensor_obj))
         except Exception as e:
             raise PerceptionError(f"sensor_fusion_fn failed: {e}")
         if self._sensor_cal is not None:
@@ -273,17 +269,18 @@ class Perception:
             v = self._sensor_cal.apply(v)
         return v
 
+    # ---- internals ----
+
     def _determine_target_dim(self, modality_vecs: Dict[str, Vector]) -> int:
         if self.config.target_dim is not None:
             return int(self.config.target_dim)
-        # infer from first available vector (dict preserves insertion order)
         for v in modality_vecs.values():
             return int(v.shape[0])
         raise PerceptionError("cannot infer target_dim (no vectors)")
 
     @staticmethod
     def _apply_confidences(weights: Dict[str, float], confidences: Dict[str, float]) -> Dict[str, float]:
-        # combine static weights with confidences in [0,1]
+        """Combine static weights with confidences in [0,1]."""
         out: Dict[str, float] = dict(weights or {})
         for k, c in (confidences or {}).items():
             c = float(np.clip(c, 0.0, 1.0))
@@ -299,8 +296,11 @@ class Perception:
         Parameters
         ----------
         inputs : dict
-            e.g. {"text": "...", "image": img, "sensor": {...}, "vec": np.array([...]),
-                  "conf": {"text": 0.8}, "weights": {"text": 2.0}}
+            Example:
+            {
+              "text": "...", "image": img, "sensor": {...}, "vec": np.array([...]),
+              "conf": {"text": 0.8}, "weights": {"text": 2.0}
+            }
 
         Returns
         -------
@@ -311,16 +311,11 @@ class Perception:
             raise PerceptionError("Perception.process expects a dict of modalities.")
 
         data = dict(inputs)
-        # normalize list[str] for text
+        # Normalize list[str] for text
         if isinstance(data.get("text"), (list, tuple)):
             data["text"] = " ".join(map(str, data["text"]))
 
-        # pre-encoded direct vector
-        direct_vec: Optional[Vector] = None
-        if "vec" in data and data["vec"] is not None:
-            direct_vec = _as_float_vec(data["vec"])
-
-        # encode present modalities
+        # Encode present modalities
         modality_vecs: Dict[str, Vector] = {}
         if "text" in data:
             v = self._encode_text(data.get("text"))
@@ -334,8 +329,8 @@ class Perception:
             v = self._encode_sensor(data.get("sensor"), update=True)
             if v is not None:
                 modality_vecs["sensor"] = v
-        if direct_vec is not None:
-            modality_vecs["vec"] = direct_vec
+        if "vec" in data and data["vec"] is not None:
+            modality_vecs["vec"] = _sanitize_vec(data["vec"])
 
         if not modality_vecs:
             raise PerceptionError("no supported modalities provided or encoders missing")
@@ -344,32 +339,43 @@ class Perception:
         target_dim = self._determine_target_dim(modality_vecs)
         aligned: Dict[str, Vector] = {}
         for k, v in modality_vecs.items():
-            vv = _align_dim(v, target_dim, self.config.dim_strategy)
+            vv = _align_dim(v, target_dim, self.config.dim_strategy, self.config.strict_dim)
             if self.config.norm_each:
                 vv = _l2norm(vv, self.config.eps)
             aligned[k] = vv
 
-        # Apply confidences if present + per-call weights override
+        # Apply confidences + per-call weight overrides
         confidences = data.get("conf", {}) if isinstance(data.get("conf", {}), dict) else {}
         fused_weights = self._apply_confidences(self.config.weights, confidences)
         if isinstance(data.get("weights"), dict):
             for k, w in data["weights"].items():
                 fused_weights[k] = float(fused_weights.get(k, 1.0) * float(w))
 
-        # Fuse
-        fused = self.fusion_fn(aligned, fused_weights)
-        fused = _as_float_vec(fused)
-        fused = _align_dim(fused, target_dim, self.config.dim_strategy)
+        # Fuse (with safe fallback)
+        try:
+            fused = self.fusion_fn(aligned, fused_weights)
+        except Exception:
+            fused = _default_fusion(aligned, fused_weights)
 
-        # Optional clip (helps with outlier encoders before final norm)
+        fused = _sanitize_vec(fused)
+        fused = _align_dim(fused, target_dim, self.config.dim_strategy, self.config.strict_dim)
+
+        # Optional clip → final norm
         if self.config.clip_value and self.config.clip_value > 0:
             c = float(self.config.clip_value)
             fused = np.clip(fused, -c, c)
-
         if self.config.norm_output:
             fused = _l2norm(fused, self.config.eps)
 
-        return fused
+        # Trace + hooks
+        if self._trace is not None:
+            # Store shallow copies to keep memory in check
+            self._trace.append({"inputs": {k: (None if k in ("image",) else data[k]) for k in data},
+                                "aligned": {k: aligned[k].copy() for k in aligned},
+                                "fused": fused.copy()})
+        self._emit("on_process", {"fused": fused.copy()})
+
+        return fused.copy()
 
     def process_batch(self, batch: Sequence[Dict[str, Any]]) -> np.ndarray:
         """Vectorize a batch of inputs; returns array with shape (B, D)."""
@@ -377,67 +383,67 @@ class Perception:
             raise PerceptionError("process_batch expects a non-empty list of input dicts")
 
         first = self.process(batch[0])
-        # honor target_dim if set; else lock to first vector's dim for determinism
         D = int(self.config.target_dim) if self.config.target_dim is not None else int(first.shape[0])
-        vecs: List[Vector] = [ _align_dim(first, D, self.config.dim_strategy) ]
-        for x in batch[1:]:
-            v = self.process(x)
-            vecs.append(_align_dim(v, D, self.config.dim_strategy))
-        return np.stack(vecs, axis=0).astype(float)
+        out = np.zeros((len(batch), D), dtype=float)
+        out[0] = first
+        for i, x in enumerate(batch[1:], start=1):
+            out[i] = _align_dim(self.process(x), D, self.config.dim_strategy, self.config.strict_dim)
+        return out
 
     # ---- introspection ----
 
     def explain(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
-        """Return a dict explaining per-modality contributions used for fusion (no calibrator updates)."""
-        data = dict(inputs)
-        if isinstance(data.get("text"), (list, tuple)):
-            data["text"] = " ".join(map(str, data["text"]))
+        """
+        Explain per-modality contributions and fused vector (uses `process`).
+        Returns target_dim, weights, aligned vectors, contributions, and fused outputs.
+        """
+        v = self.process(inputs)  # ensures identical path/guards
+        last = (self._trace[-1] if self._trace else None)
 
-        raw: Dict[str, Vector] = {}
-        if "text" in data:
-            v = self._encode_text(data.get("text"))
-            if v is not None:
-                raw["text"] = v
-        if "image" in data:
-            v = self._encode_image(data.get("image"))
-            if v is not None:
-                raw["image"] = v
-        if "sensor" in data:
-            v = self._encode_sensor(data.get("sensor"), update=False)  # no state mutation
-            if v is not None:
-                raw["sensor"] = v
-        if "vec" in data and data["vec"] is not None:
-            raw["vec"] = _as_float_vec(data["vec"])
+        # Recompute contributions with the same weights on the aligned cache
+        if last is not None:
+            aligned = last["aligned"]
+        else:
+            # Fallback: recompute aligned from inputs without mutating calibrator
+            data = dict(inputs)
+            if isinstance(data.get("text"), (list, tuple)):
+                data["text"] = " ".join(map(str, data["text"]))
+            raw: Dict[str, Vector] = {}
+            if "text" in data:
+                tv = self._encode_text(data.get("text"));  raw.update(text=tv) if tv is not None else None
+            if "image" in data:
+                iv = self._encode_image(data.get("image")); raw.update(image=iv) if iv is not None else None
+            if "sensor" in data:
+                sv = self._encode_sensor(data.get("sensor"), update=False); raw.update(sensor=sv) if sv is not None else None
+            if "vec" in data and data["vec"] is not None:
+                raw["vec"] = _sanitize_vec(data["vec"])
+            if not raw:
+                raise PerceptionError("No encodable modalities.")
+            D = self._determine_target_dim(raw)
+            aligned = {k: _align_dim(_l2norm(_sanitize_vec(raw[k]), self.config.eps) if self.config.norm_each else _sanitize_vec(raw[k]),
+                                     D, self.config.dim_strategy, self.config.strict_dim) for k in raw}
 
-        if not raw:
-            raise PerceptionError("No encodable modalities.")
+        confidences = inputs.get("conf", {}) if isinstance(inputs.get("conf", {}), dict) else {}
+        weights = self._apply_confidences(self.config.weights, confidences)
+        if isinstance(inputs.get("weights"), dict):
+            for k, w in inputs["weights"].items():
+                weights[k] = float(weights.get(k, 1.0) * float(w))
 
-        # alignment + (optional) per-modality norm
-        D = self._determine_target_dim(raw)
-        aligned = {k: _align_dim(v, D, self.config.dim_strategy) for k, v in raw.items()}
-        if self.config.norm_each:
-            aligned = {k: _l2norm(v, self.config.eps) for k, v in aligned.items()}
-
-        confidences = data.get("conf", {}) if isinstance(data.get("conf", {}), dict) else {}
-        fused_weights = self._apply_confidences(self.config.weights, confidences)
-        if isinstance(data.get("weights"), dict):
-            for k, w in data["weights"].items():
-                fused_weights[k] = float(fused_weights.get(k, 1.0) * float(w))
-
-        # fused vector & per-modality contributions prior to final normalization
-        contribs = {k: aligned[k] * float(fused_weights.get(k, 1.0)) for k in aligned}
-        denom = (sum(fused_weights.get(k, 1.0) for k in aligned) or 1.0)
-        fused = sum(contribs.values()) / denom
+        denom = (sum(weights.get(k, 1.0) for k in aligned) or 1.0)
+        contribs = {k: aligned[k] * float(weights.get(k, 1.0)) for k in aligned}
+        fused_pre = sum(contribs.values()) / denom
+        fused_pre = _sanitize_vec(fused_pre)
         if self.config.clip_value and self.config.clip_value > 0:
             c = float(self.config.clip_value)
-            fused = np.clip(fused, -c, c)
-        fused_out = _l2norm(fused, self.config.eps) if self.config.norm_output else fused
+            fused_pre = np.clip(fused_pre, -c, c)
+        fused_out = _l2norm(fused_pre, self.config.eps) if self.config.norm_output else fused_pre
 
         return {
-            "target_dim": int(D),
-            "weights": {k: float(fused_weights.get(k, 1.0)) for k in aligned},
+            "target_dim": int(len(v)),
+            "weights": {k: float(weights.get(k, 1.0)) for k in aligned},
             "aligned": {k: aligned[k].tolist() for k in aligned},
             "contribs": {k: contribs[k].tolist() for k in contribs},
-            "fused_pre_norm": fused.tolist(),
+            "fused_pre_norm": fused_pre.tolist(),
             "fused": fused_out.tolist(),
+            "trace": last,  # includes shallow copies of inputs/aligned/fused if trace=True
         }
