@@ -44,33 +44,12 @@ Public API
   - predict_influence(src, dst, post=None, rupture=None, depth=1)
   - register_hook(event, fn)   # events: on_influence, on_link, on_unlink
 
-- class EpistemicProgrammableGraph (new; subclass of EpistemicGraph)
+- class EpistemicProgrammableGraph (subclass)
   - set_default(name, fn)       # override graph-wide strategy
   - set_position(name, x, y)    # optional node positions for distance-aware decay
   - link(..., gate_fn=..., influence_fn=..., magnitude_fn=..., target_fn=...,
                  nudge_fn=..., damp_fn=..., target=..., resolve_channel=..., params={...})
-
-Quick start
------------
-from cognize.network import EpistemicProgrammableGraph
-from cognize import EpistemicState
-
-g = EpistemicProgrammableGraph(damping=0.6, max_depth=2, rupture_only_propagation=True)
-g.add("sensor_a", state=EpistemicState(threshold=0.35, realign_strength=0.25))
-g.add("model_b",  state=EpistemicState(threshold=0.40, realign_strength=0.20))
-
-# plug a custom gate and magnitude, keep others default
-g.link("sensor_a","model_b", weight=0.9, mode="pressure", decay=0.9, cooldown=3,
-       gate_fn=lambda src_st,dst_st,ctx: bool(ctx["post_src"].get("ruptured", False)),
-       magnitude_fn=lambda base, edge, dst_st, ctx: min(
-           ctx["graph"].max_step,
-           ctx["graph"].damping * edge["weight"] * base / max(1, ctx["depth"])
-       ))
-
-g.step("sensor_a", 0.8)
-g.step("model_b",  {"temp": 22})
-print(g.stats())
-print(g.last_cascade(5))
+  - update_link(..., gate_fn=..., influence_fn=..., ...)  # hot-update callables/params
 """
 
 from __future__ import annotations
@@ -81,6 +60,13 @@ import json
 import numpy as np
 
 from .epistemic import EpistemicState
+
+__all__ = [
+    "Edge",
+    "ProgrammableEdge",
+    "EpistemicGraph",
+    "EpistemicProgrammableGraph",
+]
 
 # ---------------------------
 # Edge definition
@@ -130,6 +116,9 @@ class EpistemicGraph:
         rupture_only_propagation: bool = True,
         rng: Optional[np.random.Generator] = None,
         cascade_trace_cap: int = 512,
+        # Optional softcap to compress 'base' before scaling (None | "tanh" | "log1p")
+        softcap: Optional[str] = None,
+        softcap_k: float = 1.0,
     ):
         self.nodes: Dict[str, EpistemicState] = {}
         self.edges: Dict[str, Dict[str, Edge]] = {}
@@ -157,6 +146,10 @@ class EpistemicGraph:
         # name -> {"theta_base": float, "k_base": float, "dtheta": float, "dk": float}
         self._policy_bias: Dict[str, Dict[str, float]] = {}
         self._policy_bias_decay: float = 0.9  # decay each step for that node
+
+        # Optional softcap for base magnitudes
+        self.softcap: Optional[str] = softcap
+        self.softcap_k: float = float(softcap_k)
 
     # ---- node & edge management ----
 
@@ -189,6 +182,7 @@ class EpistemicGraph:
             raise KeyError("Both src and dst must exist in graph.")
         if mode not in ("pressure", "delta", "policy"):
             raise ValueError("mode must be one of: 'pressure', 'delta', 'policy'")
+        self.edges.setdefault(src, {})
         self.edges[src][dst] = Edge(
             weight=float(abs(weight)),  # enforce non-negative
             mode=mode,
@@ -323,6 +317,12 @@ class EpistemicGraph:
             if base <= 0.0:
                 continue
 
+            # Optional softcap on base (pre-scale compression)
+            if self.softcap == "tanh":
+                base = float(np.tanh(self.softcap_k * base))
+            elif self.softcap == "log1p":
+                base = float(np.log1p(self.softcap_k * base))
+
             magnitude = float(self.damping * e.weight * base * (e.decay ** (depth - 1)))
 
             # Cap by both graph-level and node-local caps
@@ -361,6 +361,14 @@ class EpistemicGraph:
                 dst_state._log_event("graph_influence", event)
             except Exception:
                 pass  # keep network resilient
+
+            # Optional: mirror into node history as a 'nudge' (if kernel supports it)
+            if applied != 0.0 and hasattr(dst_state, "_log_nudge"):
+                try:
+                    dst_state._log_nudge(applied=applied, src=src, mode=e.mode, depth=depth)  # type: ignore[attr-defined]
+                except Exception:
+                    pass
+
             self._emit("on_influence", event)
 
             # Mark last influence step for cooldown
@@ -549,6 +557,8 @@ class EpistemicGraph:
             "max_depth": self.max_depth,
             "max_step": self.max_step,
             "rupture_only": self.rupture_only,
+            "softcap": self.softcap,
+            "softcap_k": self.softcap_k,
             "nodes": list(self.nodes.keys()),
             "edges": {
                 src: {dst: e.as_dict() for dst, e in nbrs.items()}
@@ -569,6 +579,8 @@ class EpistemicGraph:
         self.max_depth = int(payload.get("max_depth", self.max_depth))
         self.max_step = float(payload.get("max_step", self.max_step))
         self.rupture_only = bool(payload.get("rupture_only", self.rupture_only))
+        self.softcap = payload.get("softcap", self.softcap)
+        self.softcap_k = float(payload.get("softcap_k", self.softcap_k))
 
         # Ensure nodes exist
         for name in payload.get("nodes", []):
@@ -722,6 +734,11 @@ class EpistemicGraph:
         base = (pressure if e.mode in ("pressure", "policy") else delta * 0.25)
         if base <= 0.0:
             return 0.0
+        # Apply same softcap path used in _propagate_from
+        if self.softcap == "tanh":
+            base = float(np.tanh(self.softcap_k * base))
+        elif self.softcap == "log1p":
+            base = float(np.log1p(self.softcap_k * base))
         magnitude = float(self.damping * e.weight * base * (e.decay ** (depth - 1)))
         node_cap = float(getattr(self.nodes[dst], "step_cap", self.max_step))
         cap = float(min(self.max_step, max(1e-6, node_cap)))
@@ -812,6 +829,11 @@ def _default_influence(src_st: EpistemicState, post_src: Dict[str, Any], ctx: Di
 def _default_magnitude(base: float, edge_meta: Dict[str, Any], dst_st: EpistemicState, ctx: Dict[str, Any]) -> float:
     g = ctx["graph"]
     depth = int(ctx["depth"])
+    # softcap (opt-in)
+    if getattr(g, "softcap", None) == "tanh":
+        base = float(np.tanh(getattr(g, "softcap_k", 1.0) * base))
+    elif getattr(g, "softcap", None) == "log1p":
+        base = float(np.log1p(getattr(g, "softcap_k", 1.0) * base))
     mag = float(g.damping * edge_meta["weight"] * base * (edge_meta["decay"] ** max(0, depth - 1)))
     # optional spatial/parametric distance decay
     dist_decay = edge_meta.get("dist_decay", 0.0)
@@ -872,7 +894,7 @@ def _default_nudge(dst_st: EpistemicState, magnitude: float, post_src: Dict[str,
             step *= (cap / (step_norm or 1.0)); step_norm = cap
         v[target] = (sub + step).astype(float); dst_st.V = v
         return step_norm
-    # fallback to your scalar/whole-vector logic
+    # fallback to scalar/whole-vector logic
     return g._nudge_value_toward_recent_R(dst_st, magnitude, post_src)
 
 # ---- Programmable Edge ----
@@ -936,7 +958,26 @@ class EpistemicProgrammableGraph(EpistemicGraph):
     def neighbors(self, src: str) -> Dict[str, ProgrammableEdge]:
         return dict(self.edges.get(src, {}))
 
-    # DI helpers
+    # Hot-update programmable callables/params while preserving base updates
+    def update_link(self, src: str, dst: str, **updates) -> None:
+        e = self.edges.get(src, {}).get(dst)
+        if not e:
+            raise KeyError(f"No edge {src}->{dst}")
+        # First apply base scalar fields via parent
+        base_updates = {k: v for k, v in updates.items() if k in {"mode", "weight", "decay", "cooldown"}}
+        if base_updates:
+            super().update_link(src, dst, **base_updates)
+        # Then programmable fields
+        for key in ("gate_fn", "influence_fn", "magnitude_fn", "target_fn", "nudge_fn", "damp_fn",
+                    "target", "resolve_channel", "dist_decay"):
+            if key in updates:
+                setattr(e, key, updates[key])
+        if "params" in updates and isinstance(updates["params"], dict):
+            e.params.update(updates["params"])
+        self._emit("on_link", {"event": "edge_updated", "src": src, "dst": dst,
+                               "plug_updates": [k for k in updates.keys()
+                                                if k not in {"mode", "weight", "decay", "cooldown"}]})
+
     def set_default(self, name: str, fn: Callable) -> None:
         if name not in self.defaults:
             raise KeyError(f"Unknown default '{name}'")
@@ -1004,6 +1045,12 @@ class EpistemicProgrammableGraph(EpistemicGraph):
                 dst_st._log_event("graph_influence", event)
             except Exception:
                 pass
+            # Optional: mirror into node history as a 'nudge' if available
+            if applied != 0.0 and hasattr(dst_st, "_log_nudge"):
+                try:
+                    dst_st._log_nudge(applied=applied, src=src, mode=e.mode, depth=depth)  # type: ignore[attr-defined]
+                except Exception:
+                    pass
             self._emit("on_influence", event)
 
             e.last_influence_t = dst_st.summary()["t"]
