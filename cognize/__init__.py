@@ -6,7 +6,7 @@ Cognize
 =======
 Belief dynamics middleware: EpistemicState + Policies + Meta-learning + Graph.
 
-This package exposes a single ergonomic entrypoint:
+Ergonomic entrypoint:
 
     import cognize as cg
 
@@ -21,18 +21,13 @@ Common imports:
                          realign_linear, realign_tanh, realign_bounded, realign_decay_adaptive,
                          collapse_reset, collapse_soft_decay, collapse_adopt_R, collapse_randomized)
 
-Convenience:
-    make_simple_state(...)  -> EpistemicState (optionally with PolicyManager + SAFE_SPECS)
-    make_graph(...)         -> (Programmable) EpistemicGraph quickly
-    demo_text_encoder(s)    -> tiny zero-dep text encoder for Perception demos
-
 Versioning:
     __version__ is single-sourced from `cognize.epistemic` (>= 0.1.8). If that import fails,
     the local fallback is used. Releases MUST keep both in lock-step.
 
 Import behavior:
-    - Top-level names above are **eagerly** imported for ergonomics and IDE discovery.
-    - Subpackages `policies`, `network`, and `meta_learning` are **lazy-loaded** on first
+    - Top-level names above are eagerly imported for ergonomics and IDE discovery.
+    - Subpackages `policies`, `network`, and `meta_learning` are lazy-loaded on first
       attribute access via `__getattr__` (e.g., `cognize.policies`).
 """
 
@@ -93,6 +88,7 @@ from .meta_learning import (
 import numpy as _np
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple, Union
 
+
 def demo_text_encoder(s: str) -> _np.ndarray:
     """
     Tiny, deterministic encoder for demos/tests (no external deps).
@@ -103,10 +99,11 @@ def demo_text_encoder(s: str) -> _np.ndarray:
     spaces = s.count(" ")
     vowels = sum(ch.lower() in "aeiou" for ch in s)
     digits = sum(ch.isdigit() for ch in s)
-    punct  = int(any(ch in ".,;:!?-—_()[]{}\"'" for ch in s))
+    punct = int(any(ch in ".,;:!?-—_()[]{}\"'" for ch in s))
     v = _np.array([len(s), spaces, vowels, digits, punct, 1.0], dtype=float)
     n = float(_np.linalg.norm(v)) or 1.0
     return (v / n).astype(float)
+
 
 def make_simple_state(
     V0: Union[float, Sequence[float]] = 0.0,
@@ -126,6 +123,7 @@ def make_simple_state(
                            epsilon=0.15, promote_margin=1.03, cooldown_steps=30)
         state.policy_manager = pm
     return state
+
 
 def make_graph(
     names: Sequence[str],
@@ -164,20 +162,30 @@ def make_graph(
     if edges:
         for e in edges:
             if len(e) == 2:
-                src, dst = e; G.link(src, dst)
+                src, dst = e
+                G.link(src, dst)
             elif len(e) == 3:
-                src, dst, w = e; G.link(src, dst, weight=float(w))
+                src, dst, w = e
+                G.link(src, dst, weight=float(w))
             elif len(e) == 4:
-                src, dst, w, mode = e; G.link(src, dst, weight=float(w), mode=str(mode))
+                src, dst, w, mode = e
+                G.link(src, dst, weight=float(w), mode=str(mode))
             elif len(e) == 5:
-                src, dst, w, mode, decay = e; G.link(src, dst, weight=float(w), mode=str(mode), decay=float(decay))
+                src, dst, w, mode, decay = e
+                G.link(src, dst, weight=float(w), mode=str(mode), decay=float(decay))
             elif len(e) == 6:
                 src, dst, w, mode, decay, cooldown = e
                 G.link(src, dst, weight=float(w), mode=str(mode), decay=float(decay), cooldown=int(cooldown))
             elif len(e) == 7:
                 src, dst, w, mode, decay, cooldown, kw = e
                 kw = dict(kw or {})
-                G.link(src, dst, weight=float(w), mode=str(mode), decay=float(decay), cooldown=int(cooldown), **kw)
+                if programmable:
+                    G.link(src, dst, weight=float(w), mode=str(mode),
+                           decay=float(decay), cooldown=int(cooldown), **kw)
+                else:
+                    # Ignore programmable extras on the plain graph to avoid TypeError
+                    G.link(src, dst, weight=float(w), mode=str(mode),
+                           decay=float(decay), cooldown=int(cooldown))
             else:
                 raise ValueError(f"Unsupported edge spec: {e}")
 
@@ -188,6 +196,7 @@ def make_graph(
                 st.policy_manager = PolicyManager(SAFE_SPECS, PolicyMemory(), ShadowRunner(),
                                                   epsilon=0.15, promote_margin=1.03, cooldown_steps=30)
     return G
+
 
 # --- Small UX niceties (monkey-patched, safe & optional) ----------------------
 
@@ -202,14 +211,17 @@ def _state_repr(self: EpistemicState) -> str:  # pragma: no cover (presentation 
     except Exception:
         return object.__repr__(self)
 
+
 def _state_observe(self: EpistemicState, R: Any) -> Dict[str, Any]:
     self.receive(R)
     return self.last() or {}
+
 
 def _state_observe_many(self: EpistemicState, seq: Iterable[Any]) -> Dict[str, Any]:
     for x in seq:
         self.receive(x)
     return self.last() or {}
+
 
 if not hasattr(EpistemicState, "observe"):
     EpistemicState.observe = _state_observe  # type: ignore[attr-defined]
@@ -217,6 +229,7 @@ if not hasattr(EpistemicState, "observe_many"):
     EpistemicState.observe_many = _state_observe_many  # type: ignore[attr-defined]
 if EpistemicState.__repr__ is object.__repr__:
     EpistemicState.__repr__ = _state_repr  # type: ignore[assignment]
+
 
 def _graph_pulse(self: EpistemicGraph, k: int = 5) -> Dict[str, Any]:
     stats = self.stats()
@@ -229,6 +242,7 @@ def _graph_pulse(self: EpistemicGraph, k: int = 5) -> Dict[str, Any]:
         "hot_edges": [{"src": s, "dst": d, "score": float(v)} for (s, d, v) in hot],
     }
 
+
 if not hasattr(EpistemicGraph, "pulse"):
     EpistemicGraph.pulse = _graph_pulse  # type: ignore[attr-defined]
 
@@ -237,12 +251,14 @@ if not hasattr(EpistemicGraph, "pulse"):
 import importlib as _importlib
 _lazy_submods = {"policies": ".policies", "network": ".network", "meta_learning": ".meta_learning"}
 
+
 def __getattr__(name: str):
     if name in _lazy_submods:
         mod = _importlib.import_module(_lazy_submods[name], __name__)
         globals()[name] = mod  # cache for subsequent access
         return mod
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 def __dir__():
     return sorted(list(globals().keys()) + list(_lazy_submods.keys()))
