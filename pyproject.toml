@@ -21,7 +21,7 @@ classifiers = [
 [project.optional-dependencies]
 viz = ["matplotlib", "seaborn", "pandas"]
 dev = ["pytest", "ruff", "mypy", "black", "build", "twine"]
-# convenience roll-up
+
 all = ["matplotlib", "seaborn", "pandas", "pytest", "ruff", "mypy", "black", "build", "twine"]
 
 [project.urls]
@@ -41,10 +41,10 @@ include-package-data = true
 where = ["."]
 include = ["cognize*"]
 
-# Read version from the package (keeps kernel/version in lockstep)
+
 [tool.setuptools.dynamic]
 version = { attr = "cognize.__version__" }
 
-# Ship type hints (create an empty cognize/py.typed file)
+
 [tool.setuptools.package-data]
 "cognize" = ["py.typed"]
