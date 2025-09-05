@@ -2,7 +2,8 @@ from pathlib import Path
 from setuptools import setup, find_packages
 import re
 
-README = Path("README.md").read_text(encoding="utf-8")
+README_PATH = Path(__file__).parent / "README.md"
+README = README_PATH.read_text(encoding="utf-8") if README_PATH.exists() else ""
 
 def read_version() -> str:
     for path in ("cognize/__init__.py", "cognize/epistemic.py"):
@@ -15,7 +16,7 @@ def read_version() -> str:
 
 setup(
     name="cognize",
-    version=read_version(),                 
+    version=read_version(),
     author="Pulikanti Sashi Bharadwaj",
     author_email="bharadwajpulikanti11@gmail.com",
     description="Programmable cognition for Python systems.",
@@ -39,18 +40,22 @@ setup(
         "Intended Audience :: Developers",
         "Topic :: Scientific/Engineering :: Artificial Intelligence",
     ],
-    packages=find_packages(include=["cognize", "cognize.*"]),
-    include_package_data=True,                  
-    package_data={"cognize": ["py.typed"]},      
-    python_requires=">=3.10",                    
+    packages=find_packages(include=["cognize", "cognize.*"], exclude=("tests", "examples", "docs")),
+    include_package_data=True,
+    package_data={"cognize": ["py.typed"]},
+    zip_safe=False,
+    python_requires=">=3.10",
     install_requires=[
         "numpy>=1.26",
     ],
     extras_require={
-        "viz": ["pandas>=2.0", "matplotlib>=3.6", "seaborn>=0.12"],
-        "dev": ["pytest", "ruff", "mypy", "black", "build", "twine"],
-        "all": ["pandas>=2.0", "matplotlib>=3.6", "seaborn>=0.12",
-                "pytest", "ruff", "mypy", "black", "build", "twine"],
+
+        "viz": ["pandas>=2.2", "matplotlib>=3.8", "seaborn>=0.13"],
+        "dev": ["pytest>=7", "ruff>=0.4", "mypy>=1.8", "black>=23.12.1", "build>=1.0.3", "twine>=4.0.2"],
+
+        "all": [
+            "pandas>=2.2", "matplotlib>=3.8", "seaborn>=0.13",
+            "pytest>=7", "ruff>=0.4", "mypy>=1.8", "black>=23.12.1", "build>=1.0.3", "twine>=4.0.2"
+        ],
     },
-    zip_safe=False,
 )
