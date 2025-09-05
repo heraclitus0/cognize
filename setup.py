@@ -1,41 +1,11 @@
 from pathlib import Path
 from setuptools import setup, find_packages
-import re
-import importlib.util
 
-README_PATH = Path(__file__).parent / "README.md"
-README = README_PATH.read_text(encoding="utf-8") if README_PATH.exists() else ""
-
-
-def read_version() -> str:
-
-    for path in ("cognize/epistemic.py", "cognize/__init__.py"):
-        p = Path(path)
-        if p.exists():
-            m = re.search(r'__version__\s*=\s*["\']([^"\']+)["\']', p.read_text(encoding="utf-8"))
-            if m:
-                return m.group(1)
-    raise RuntimeError("Version string not found in cognize/epistemic.py or cognize/__init__.py")
-
-
-
-VERSION = read_version()
-try:
-    spec = importlib.util.spec_from_file_location("cognize_epistemic", "cognize/epistemic.py")
-    if spec and spec.loader:
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)  # type: ignore[attr-defined]
-        code_ver = getattr(mod, "__version__", None)
-        if code_ver and code_ver != VERSION:
-            raise RuntimeError(f"Version mismatch: setup={VERSION} vs cognize/epistemic.py={code_ver}")
-except FileNotFoundError:
-
-    pass
-
+README = Path("README.md").read_text(encoding="utf-8")
 
 setup(
     name="cognize",
-    version=VERSION,
+    version="0.1.8",
     author="Pulikanti Sashi Bharadwaj",
     author_email="bharadwajpulikanti11@gmail.com",
     description="Programmable cognition for Python systems.",
@@ -64,9 +34,7 @@ setup(
     package_data={"cognize": ["py.typed"]},
     zip_safe=False,
     python_requires=">=3.10",
-    install_requires=[
-        "numpy>=1.26",
-    ],
+    install_requires=["numpy>=1.26"],
     extras_require={
         "viz": ["pandas>=2.2", "matplotlib>=3.8", "seaborn>=0.13"],
         "dev": ["pytest>=7", "ruff>=0.4", "mypy>=1.8", "black>=23.12.1", "build>=1.0.3", "twine>=4.0.2"],
