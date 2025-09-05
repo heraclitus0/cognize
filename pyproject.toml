@@ -35,7 +35,7 @@ Issues = "https://github.com/heraclitus0/cognize/issues"
 UserGuide = "https://github.com/heraclitus0/cognize/blob/main/docs/USER_GUIDE.md"
 
 [build-system]
-requires = ["setuptools>=68", "wheel"]
+requires = ["setuptools>=68", "wheel", "numpy>=1.26"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
