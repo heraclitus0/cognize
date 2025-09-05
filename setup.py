@@ -1,12 +1,23 @@
 from pathlib import Path
 from setuptools import setup, find_packages
+import re
 
 README = Path("README.md").read_text(encoding="utf-8")
 
+def read_version() -> str:
+    for path in ("cognize/__init__.py", "cognize/epistemic.py"):
+        p = Path(path)
+        if p.exists():
+            m = re.search(r'__version__\s*=\s*["\']([^"\']+)["\']', p.read_text(encoding="utf-8"))
+            if m:
+                return m.group(1)
+    raise RuntimeError("Version string not found in cognize/__init__.py or cognize/epistemic.py")
+
 setup(
     name="cognize",
-    version="0.1.7", 
+    version=read_version(),                 
     author="Pulikanti Sashi Bharadwaj",
+    author_email="bharadwajpulikanti11@gmail.com",
     description="Programmable cognition for Python systems.",
     long_description=README,
     long_description_content_type="text/markdown",
@@ -18,21 +29,28 @@ setup(
     },
     license="Apache-2.0",
     classifiers=[
-        "License :: OSI Approved :: Apache Software License",
-        "Programming Language :: Python :: 3",
-        "Programming Language :: Python :: 3 :: Only",
-        "Operating System :: OS Independent",
         "Development Status :: 3 - Alpha",
+        "License :: OSI Approved :: Apache Software License",
+        "Programming Language :: Python :: 3 :: Only",
+        "Programming Language :: Python :: 3.10",
+        "Programming Language :: Python :: 3.11",
+        "Programming Language :: Python :: 3.12",
+        "Operating System :: OS Independent",
         "Intended Audience :: Developers",
         "Topic :: Scientific/Engineering :: Artificial Intelligence",
     ],
     packages=find_packages(include=["cognize", "cognize.*"]),
-    include_package_data=True,
-    python_requires=">=3.8",
+    include_package_data=True,                  
+    package_data={"cognize": ["py.typed"]},      
+    python_requires=">=3.10",                    
     install_requires=[
         "numpy>=1.21",
     ],
     extras_require={
         "viz": ["pandas>=2.0", "matplotlib>=3.6", "seaborn>=0.12"],
+        "dev": ["pytest", "ruff", "mypy", "black", "build", "twine"],
+        "all": ["pandas>=2.0", "matplotlib>=3.6", "seaborn>=0.12",
+                "pytest", "ruff", "mypy", "black", "build", "twine"],
     },
+    zip_safe=False,
 )
