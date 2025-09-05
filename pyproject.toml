@@ -1,6 +1,6 @@
 [project]
 name = "cognize"
-dynamic = ["version"]
+version = "0.1.8"
 description = "Programmable cognition for Python systems."
 keywords = ["cognition", "epistemic", "rupture", "projection", "AI", "symbolic", "drift"]
 authors = [{ name = "Pulikanti Sashi Bharadwaj", email = "bharadwajpulikanti11@gmail.com" }]
@@ -35,7 +35,7 @@ Issues = "https://github.com/heraclitus0/cognize/issues"
 UserGuide = "https://github.com/heraclitus0/cognize/blob/main/docs/USER_GUIDE.md"
 
 [build-system]
-requires = ["setuptools>=68", "wheel", "numpy>=1.26"]
+requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
