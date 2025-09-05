@@ -39,7 +39,7 @@ It’s programmable at runtime — inject your own threshold, realignment, and c
 
 ---
 
-## Use cases
+## Use Cases
 
 - **Drift & anomaly detection (streaming)** — compute `Δ, E, Θ`; trigger ruptures; emit CSV/JSON telemetry for dashboards.
 - **Continual-learning guardrails** — under non-stationarity, apply reversible cooling (`Θ↑`, `k↓` / LR↓) to reduce catastrophic forgetting.
@@ -74,7 +74,7 @@ pip install cognize
 
 ---
 
-## Snippets
+## Examples
 
 ### 1) Quick start (scalar)
 ```python
@@ -261,17 +261,6 @@ def hook_HEAD7(module, inp, out):
 # (peg runs propagation internally during step)
 # Apply your bounded nudges here according to your edge strategies/logs.
 ```
-
-### 10) Convenience helpers
-```python
-from cognize import demo_text_encoder, make_simple_state, make_graph
-
-v = demo_text_encoder("hello world!")          # small, deterministic text vector
-s = make_simple_state(V0=0.0, with_meta=True)  # quick state with PolicyManager
-G = make_graph(["A","B","C"], [("A","B",0.6), ("B","C",0.4,"delta")])  # fast graph
-print(G.pulse())  # small dashboard-style snapshot
-```
-
 ---
 
 ## Citation
