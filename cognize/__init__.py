@@ -6,10 +6,11 @@ Cognize
 =======
 Belief dynamics middleware: EpistemicState + Policies + Meta-learning + Graph.
 
-Primary, ergonomic entrypoint. Mirrors the "one handle" style of libraries like PyTorch:
+This package exposes a single ergonomic entrypoint:
+
     import cognize as cg
 
-Top-level imports (most common):
+Common imports:
     from cognize import EpistemicState, EpistemicGraph, Perception
     from cognize import PolicyManager, PolicySpec, PolicyMemory, ShadowRunner
     from cognize import POLICY_REGISTRY, SAFE_SPECS
@@ -20,20 +21,26 @@ Top-level imports (most common):
                          realign_linear, realign_tanh, realign_bounded, realign_decay_adaptive,
                          collapse_reset, collapse_soft_decay, collapse_adopt_R, collapse_randomized)
 
-Convenience helpers:
+Convenience:
     make_simple_state(...)  -> EpistemicState (optionally with PolicyManager + SAFE_SPECS)
     make_graph(...)         -> (Programmable) EpistemicGraph quickly
     demo_text_encoder(s)    -> tiny zero-dep text encoder for Perception demos
 
-Lazy loading:
-    Subpackages `policies`, `network`, `meta_learning` are lazily imported on first access.
+Versioning:
+    __version__ is single-sourced from `cognize.epistemic` (>= 0.1.8). If that import fails,
+    the local fallback is used. Releases MUST keep both in lock-step.
+
+Import behavior:
+    - Top-level names above are **eagerly** imported for ergonomics and IDE discovery.
+    - Subpackages `policies`, `network`, and `meta_learning` are **lazy-loaded** on first
+      attribute access via `__getattr__` (e.g., `cognize.policies`).
 """
 
 from __future__ import annotations
 
 # --- Package metadata ----------------------------------------------------------
 __author__ = "Pulikanti Sashi Bharadwaj"
-__license__ = "Apache 2.0"
+__license__ = "Apache-2.0"
 
 try:  # prefer kernel version (single source of truth)
     from .epistemic import __version__ as __version__
