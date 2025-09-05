@@ -9,6 +9,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 dependencies = ["numpy>=1.26"]
 classifiers = [
+  "Development Status :: 3 - Alpha",
   "Programming Language :: Python :: 3 :: Only",
   "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
@@ -19,10 +20,12 @@ classifiers = [
 ]
 
 [project.optional-dependencies]
-viz = ["matplotlib", "seaborn", "pandas"]
-dev = ["pytest", "ruff", "mypy", "black", "build", "twine"]
-
-all = ["matplotlib", "seaborn", "pandas", "pytest", "ruff", "mypy", "black", "build", "twine"]
+viz = ["pandas>=2.2", "matplotlib>=3.8", "seaborn>=0.13"]
+dev = ["pytest>=7", "ruff>=0.4", "mypy>=1.8", "black>=23.12.1", "build>=1.0.3", "twine>=4.0.2"]
+all = [
+  "pandas>=2.2", "matplotlib>=3.8", "seaborn>=0.13",
+  "pytest>=7", "ruff>=0.4", "mypy>=1.8", "black>=23.12.1", "build>=1.0.3", "twine>=4.0.2"
+]
 
 [project.urls]
 Homepage = "https://github.com/heraclitus0/cognize"
@@ -40,11 +43,10 @@ include-package-data = true
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["cognize*"]
-
+exclude = ["tests*", "examples*", "docs*"]
 
 [tool.setuptools.dynamic]
 version = { attr = "cognize.__version__" }
-
 
 [tool.setuptools.package-data]
 "cognize" = ["py.typed"]
