@@ -1,20 +1,37 @@
 [project]
 name = "cognize"
-version = "0.1.7"
+dynamic = ["version"]
 description = "Programmable cognition for Python systems."
 keywords = ["cognition", "epistemic", "rupture", "projection", "AI", "symbolic", "drift"]
 authors = [{ name = "Pulikanti Sashi Bharadwaj", email = "bharadwajpulikanti11@gmail.com" }]
 license = { text = "Apache-2.0" }
 readme = "README.md"
-requires-python = ">=3.8"
-dependencies = ["numpy>=1.20"]
+requires-python = ">=3.10"
+dependencies = ["numpy>=1.21"]
+classifiers = [
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "License :: OSI Approved :: Apache Software License",
+  "Intended Audience :: Developers",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
 
 [project.optional-dependencies]
 viz = ["matplotlib", "seaborn", "pandas"]
 dev = ["pytest", "ruff", "mypy", "black", "build", "twine"]
+# convenience roll-up
+all = ["matplotlib", "seaborn", "pandas", "pytest", "ruff", "mypy", "black", "build", "twine"]
+
+[project.urls]
+Homepage = "https://github.com/heraclitus0/cognize"
+Source = "https://github.com/heraclitus0/cognize"
+Issues = "https://github.com/heraclitus0/cognize/issues"
+UserGuide = "https://github.com/heraclitus0/cognize/blob/main/docs/USER_GUIDE.md"
 
 [build-system]
-requires = ["setuptools>=62", "wheel"]
+requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
@@ -24,8 +41,10 @@ include-package-data = true
 where = ["."]
 include = ["cognize*"]
 
-[project.urls]
-Homepage = "https://github.com/heraclitus0/cognize"
-Source = "https://github.com/heraclitus0/cognize"
-Issues = "https://github.com/heraclitus0/cognize/issues"
-UserGuide = "https://github.com/heraclitus0/cognize/blob/main/docs/USER_GUIDE.md"
+# Read version from the package (keeps kernel/version in lockstep)
+[tool.setuptools.dynamic]
+version = { attr = "cognize.__version__" }
+
+# Ship type hints (create an empty cognize/py.typed file)
+[tool.setuptools.package-data]
+"cognize" = ["py.typed"]
