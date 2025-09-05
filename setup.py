@@ -6,13 +6,14 @@ README_PATH = Path(__file__).parent / "README.md"
 README = README_PATH.read_text(encoding="utf-8") if README_PATH.exists() else ""
 
 def read_version() -> str:
-    for path in ("cognize/__init__.py", "cognize/epistemic.py"):
+    
+    for path in ("cognize/epistemic.py", "cognize/__init__.py"):
         p = Path(path)
         if p.exists():
             m = re.search(r'__version__\s*=\s*["\']([^"\']+)["\']', p.read_text(encoding="utf-8"))
             if m:
                 return m.group(1)
-    raise RuntimeError("Version string not found in cognize/__init__.py or cognize/epistemic.py")
+    raise RuntimeError("Version string not found in cognize/epistemic.py or cognize/__init__.py")
 
 setup(
     name="cognize",
@@ -40,7 +41,7 @@ setup(
         "Intended Audience :: Developers",
         "Topic :: Scientific/Engineering :: Artificial Intelligence",
     ],
-    packages=find_packages(include=["cognize", "cognize.*"], exclude=("tests", "examples", "docs")),
+    packages=find_packages(include=["cognize", "cognize.*"], exclude=("tests*", "examples*", "docs*")),
     include_package_data=True,
     package_data={"cognize": ["py.typed"]},
     zip_safe=False,
@@ -49,10 +50,8 @@ setup(
         "numpy>=1.26",
     ],
     extras_require={
-
         "viz": ["pandas>=2.2", "matplotlib>=3.8", "seaborn>=0.13"],
         "dev": ["pytest>=7", "ruff>=0.4", "mypy>=1.8", "black>=23.12.1", "build>=1.0.3", "twine>=4.0.2"],
-
         "all": [
             "pandas>=2.2", "matplotlib>=3.8", "seaborn>=0.13",
             "pytest>=7", "ruff>=0.4", "mypy>=1.8", "black>=23.12.1", "build>=1.0.3", "twine>=4.0.2"
