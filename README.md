@@ -106,7 +106,7 @@ state.receive({"text": "hello world"})
 print(state.last())  # includes Δ, Θ, ruptured, etc.
 ```
 
-### 3) Meta‑policy selection (ε‑greedy + shadow promotion)
+### 3) Meta‑policy selection
 ```python
 from cognize import EpistemicState, PolicyManager, PolicyMemory, ShadowRunner, SAFE_SPECS
 from cognize.policies import threshold_adaptive, realign_tanh, collapse_soft_decay
