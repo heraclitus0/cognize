@@ -44,7 +44,7 @@ setup(
     package_data={"cognize": ["py.typed"]},      
     python_requires=">=3.10",                    
     install_requires=[
-        "numpy>=1.21",
+        "numpy>=1.26",
     ],
     extras_require={
         "viz": ["pandas>=2.0", "matplotlib>=3.6", "seaborn>=0.12"],
