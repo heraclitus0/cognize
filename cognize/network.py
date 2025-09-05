@@ -66,6 +66,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Callable, Dict, Iterable, Optional, List, Any, Tuple, Protocol, Union
 import json
+import math
 import numpy as np
 
 from .epistemic import EpistemicState
@@ -99,6 +100,79 @@ def register_strategy(strategy_id: str, **fns: Callable) -> None:
 def get_strategy(strategy_id: str) -> Optional[Dict[str, Callable]]:
     """Return strategy callables dict for an ID, or None if missing."""
     return _STRATEGY_REGISTRY.get(strategy_id)
+
+# ---------------------------
+# JSON safety helpers
+# ---------------------------
+
+def _to_py_scalar(x: Any) -> Any:
+    if isinstance(x, np.generic):
+        return x.item()
+    return x
+
+def _is_json_scalar(x: Any) -> bool:
+    return isinstance(x, (str, int, float, bool)) or x is None
+
+def _sanitize_float(x: float) -> float:
+    try:
+        xf = float(x)
+    except Exception:
+        return 0.0
+    return xf if math.isfinite(xf) else 0.0
+
+def _json_sanitize(obj: Any, _depth: int = 0, _max_depth: int = 64) -> Any:
+    """
+    Convert arbitrary Python/numpy structures into JSON-safe values.
+    - Converts numpy scalars/arrays to Python scalars/lists
+    - Tuples/sets -> lists
+    - Dict keys -> str
+    - Callables -> None (dropped by callers as needed)
+    - Non-finite floats -> 0.0
+    """
+    if _depth > _max_depth:
+        return None
+
+    # Strip callables early
+    if callable(obj):
+        return None
+
+    # Numpy scalars
+    if isinstance(obj, np.generic):
+        obj = obj.item()
+
+    # Scalars
+    if _is_json_scalar(obj):
+        if isinstance(obj, float):
+            return _sanitize_float(obj)
+        return obj
+
+    # Numpy arrays -> lists
+    if isinstance(obj, np.ndarray):
+        return [_json_sanitize(_to_py_scalar(v), _depth + 1, _max_depth) for v in obj.tolist()]
+
+    # Lists / tuples / sets
+    if isinstance(obj, (list, tuple, set)):
+        return [_json_sanitize(v, _depth + 1, _max_depth) for v in obj]
+
+    # Dicts
+    if isinstance(obj, dict):
+        out: Dict[str, Any] = {}
+        for k, v in obj.items():
+            if callable(v):
+                continue
+            ks = str(k)
+            sv = _json_sanitize(v, _depth + 1, _max_depth)
+            # allow only JSON-native types post-sanitization
+            if isinstance(sv, (dict, list)) or _is_json_scalar(sv):
+                out[ks] = sv
+        return out
+
+    # Fallback: try repr() (last resort)
+    try:
+        s = repr(obj)
+        return s
+    except Exception:
+        return None
 
 # ---------------------------
 # Edge definition
@@ -263,7 +337,7 @@ class EpistemicGraph:
 
     def neighbors(self, src: str) -> Dict[str, Edge]:
         """Return a read-only snapshot of the adjacency map for `src`."""
-        return dict(self.edges.get(src, {}))  # avoid leaking internal mutables
+        return dict(self.edges.get(src, {}))  # note: returns live Edge objects
 
     # ---- stepping ----
 
@@ -489,7 +563,8 @@ class EpistemicGraph:
         """Apply a reversible, decaying bias to Θ (up) and k (down) for node `name`."""
         st = self.nodes[name]
         try:
-            dθ_inc = float(np.clip(0.05 * magnitude, -0.2, 0.2))
+            # lower bound at 0.0 since magnitude >= 0
+            dθ_inc = float(np.clip(0.05 * magnitude, 0.0, 0.2))
             dk_inc = float(np.clip(0.03 * magnitude, 0.0, 0.2))
             bias = self._policy_bias.get(name)
             if bias is None:
@@ -882,13 +957,13 @@ def _default_magnitude(base: float, edge_meta: Dict[str, Any], dst_st: Epistemic
     return float(np.clip(mag, -cap, cap))
 
 def _default_target(dst_st: EpistemicState, edge_meta: Dict[str, Any], ctx: Dict[str, Any]) -> Optional[slice]:
-    # None => whole V. Tuple (i,j) => slice. Or resolver(name) via resolve_channel.
+    # None => whole V. (i,j) or [i, j] => slice. Or resolver(name) via resolve_channel.
     if not isinstance(dst_st.V, np.ndarray):
         return None
     t = edge_meta.get("target", None)
     if t is None:
         return slice(0, dst_st.V.shape[0])
-    if isinstance(t, tuple) and len(t) == 2:
+    if isinstance(t, (tuple, list)) and len(t) == 2:
         i, j = int(t[0]), int(t[1])
         i = max(0, min(i, dst_st.V.shape[0])); j = max(i, min(j, dst_st.V.shape[0]))
         return slice(i, j)
@@ -1099,9 +1174,9 @@ class EpistemicProgrammableGraph(EpistemicGraph):
         """
         Persist adjacency/edge metadata to JSON. For programmable edges, also saves:
           - strategy_id (string, if set)
-          - params (JSON-safe dict)
-          - target (JSON-safe; str/tuple/callable not serialized, only values)
-          - dist_decay (numeric; callables not serialized)
+          - params (JSON-safe dict; callables removed, numpy types converted)
+          - target (JSON-safe; callables dropped)
+          - dist_decay (numeric; callables dropped -> 0.0)
         Callables are NOT serialized.
         """
         payload = {
@@ -1120,11 +1195,19 @@ class EpistemicProgrammableGraph(EpistemicGraph):
             for dst, e in nbrs.items():
                 base = e.as_dict()
                 if include_strategies and isinstance(e, ProgrammableEdge):
+                    # Guard target / dist_decay against callables; deep-sanitize params
+                    raw_params = e.params if isinstance(e.params, dict) else {}
+                    safe_params = _json_sanitize(raw_params)
+                    if not isinstance(safe_params, dict):
+                        safe_params = {}
+                    tgt = e.target if not callable(e.target) else None
+                    dd = e.dist_decay if not callable(e.dist_decay) else 0.0
+                    dd = _json_sanitize(dd)
                     base.update({
                         "strategy_id": e.strategy_id,
-                        "params": dict(e.params or {}),
-                        "target": e.target,
-                        "dist_decay": e.dist_decay,
+                        "params": safe_params,
+                        "target": _json_sanitize(tgt),
+                        "dist_decay": dd if _is_json_scalar(dd) else 0.0,
                     })
                 payload["edges"][src][dst] = base
         with open(path, "w", encoding="utf-8") as f:
