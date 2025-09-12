@@ -11,7 +11,7 @@
   <img src="https://img.shields.io/badge/status-beta-orange" alt="Status: beta">
   <img src="https://img.shields.io/badge/license-Apache%202.0-blue" alt="License">
   <a href="https://pepy.tech/project/cognize"><img src="https://static.pepy.tech/badge/cognize" alt="Downloads"></a>
-  <a href="https://doi.org/10.5281/zenodo.17042859"><img src="https://zenodo.org/badge/DOI/10.5281/zenodo.17042859.svg-yellow" alt="DOI"></a>
+  <a href="https://doi.org/10.5281/zenodo.17042859"><img src="https://zenodo.org/badge/DOI/10.5281/zenodo.17042859.svg" alt="DOI"></a>
 </p>
 
 ---
